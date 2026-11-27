@@ -90,15 +90,7 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
-      - name: Smoke test (/)
-        run: |
-          for i in 1 2 3 4 5 6 7 8 9 10; do
-            if curl -fsS --max-time 10 "https://madmovil_web.yagorat.workers.dev/" | grep -q 'madmovil'; then
-              echo "Smoke test OK"
-              exit 0
-            fi
-            echo "Intento $i fallido; esperando..."
-            sleep 6
-          done
-          echo "::error::Smoke test fallido: / no responde tras el deploy"
-          exit 1
+      # Sin smoke remoto: workers.dev está desactivado en wrangler.jsonc (origin alternativo
+      # que esquivaba las protecciones anti-bots de la zone) y www.madmovil.es desafía a los
+      # runners de GitHub, así que no hay URL alcanzable desde el CI. El deploy falla si
+      # wrangler falla; build/check/CSP ya gatean el resto.
