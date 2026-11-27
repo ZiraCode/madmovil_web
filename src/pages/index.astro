@@ -1,0 +1,182 @@
+---
+import Layout from '../layouts/Layout.astro';
+import FavoriteStops from '../components/FavoriteStops.astro';
+import UnifiedSearch from '../components/UnifiedSearch.astro';
+import { ApiError, unifiedSearch } from '../lib/api';
+import { renderSearchResultsHtml, toUnifiedSearchData } from '../lib/searchresults';
+import { MAX_QUERY_LEN } from '../lib/searchwidget';
+import { t, translator, href } from '../lib/i18n';
+import { jsonLdHtml, websiteJsonLd } from '../lib/seo';
+
+export const prerender = false;
+
+const locale = Astro.locals.locale ?? 'es';
+const tr = translator(locale);
+
+// ?q= (nuevo); ?name=/?stopId= del buscador antiguo redirigen su valor a la búsqueda unificada
+const qParam = (Astro.url.searchParams.get('q') ?? Astro.url.searchParams.get('name') ?? Astro.url.searchParams.get('stopId'))?.trim() ?? '';
+// Acota el fan-out (auditoría, hallazgo 7): una query larguísima no dispara búsquedas
+const queryTooLong = qParam.length > MAX_QUERY_LEN;
+
+// Fallback SSR del buscador (sin JS, o Enter con el dropdown cerrado): mismo renderer
+// que el dropdown. El ranking lo hace el server; aquí solo se pinta.
+let resultsHtml: string | null = null;
+let searchError: string | null = null;
+
+if (qParam && !queryTooLong) {
+  try {
+    const res = await unifiedSearch(qParam, { lines: 5, stops: 8 });
+    resultsHtml = renderSearchResultsHtml(locale, qParam, toUnifiedSearchData(res));
+  } catch (e) {
+    searchError = e instanceof ApiError ? e.message : t(locale, 'common.unexpectedError');
+  }
+}
+---
+
+<Layout>
+  <script type="application/ld+json" set:html={jsonLdHtml(websiteJsonLd(locale))} />
+  <UnifiedSearch query={qParam} />
+
+  {
+    (resultsHtml || searchError || queryTooLong) && (
+      <section class="mt-5" aria-label={tr('home.resultsAria')}>
+        {searchError && (
+          <p
+            class="flex items-start gap-3 rounded-lg border border-danger bg-danger-soft px-4 py-3 text-sm font-medium text-danger-ink"
+            role="alert"
+          >
+            <span
+              class="mt-px grid size-5 shrink-0 place-items-center rounded-full bg-danger text-[11px] font-bold text-page"
+              aria-hidden="true"
+            >
+              !
+            </span>
+            <span>{searchError}</span>
+          </p>
+        )}
+
+        {!searchError && queryTooLong && (
+          <div class="rounded-xl border border-line bg-surface px-6 py-8 text-center shadow-xs">
+            <p class="font-semibold text-ink">{tr('home.queryTooLong')}</p>
+            <p class="mt-1 text-sm text-ink-3">{tr('home.queryTooLongBody')}</p>
+          </div>
+        )}
+
+        {resultsHtml && !searchError && <div set:html={resultsHtml} />}
+      </section>
+    )
+  }
+
+  {/* Qué es la web: visible por defecto en el SSR (SEO + primera visita); el script de
+      FavoriteStops la oculta cuando el usuario ya tiene paradas guardadas */}
+  <section id="home-intro" class="mt-7" aria-label={tr('home.introAria')}>
+    <div class="rounded-2xl border border-line bg-surface px-5 py-5 shadow-xs sm:px-6">
+      <h2 class="text-lg font-bold tracking-tight">{tr('home.introTitle')}</h2>
+      <p class="mt-2 text-[15px] leading-relaxed text-ink-2">{tr('home.introBody')}</p>
+      <ul class="mt-4 grid gap-2.5 text-sm">
+        <li class="flex gap-2.5">
+          <span
+            class="mt-0.5 grid size-7 shrink-0 place-items-center rounded-lg bg-brand-soft text-brand-ink"
+            aria-hidden="true"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              class="size-4"
+            >
+              <circle cx="12" cy="12" r="8.5"></circle>
+              <path d="M12 7.5V12l3 2"></path>
+            </svg>
+          </span>
+          <span class="leading-relaxed text-ink-2">{tr('home.introRealtime')}</span>
+        </li>
+        <li class="flex gap-2.5">
+          <span
+            class="mt-0.5 grid size-7 shrink-0 place-items-center rounded-lg bg-brand-soft text-brand-ink"
+            aria-hidden="true"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              class="size-4"
+            >
+              <rect x="4" y="5.5" width="16" height="15" rx="2"></rect>
+              <path d="M8 3.5v4M16 3.5v4M4 10.5h16"></path>
+            </svg>
+          </span>
+          <span class="leading-relaxed text-ink-2">{tr('home.introSchedules')}</span>
+        </li>
+        <li class="flex gap-2.5">
+          <span
+            class="mt-0.5 grid size-7 shrink-0 place-items-center rounded-lg bg-brand-soft text-brand-ink"
+            aria-hidden="true"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              class="size-4"
+            >
+              <path
+                d="M11.48 3.499a.562.562 0 0 1 1.04 0l2.125 5.111a.562.562 0 0 0 .475.345l5.518.442c.499.04.701.663.321.988l-4.204 3.602a.562.562 0 0 0-.182.557l1.285 5.385a.562.562 0 0 1-.84.61l-4.725-2.885a.562.562 0 0 0-.586 0L6.982 20.54a.562.562 0 0 1-.84-.61l1.285-5.386a.562.562 0 0 0-.182-.557l-4.204-3.602a.562.562 0 0 1 .321-.988l5.518-.442a.562.562 0 0 0 .475-.345L11.48 3.5Z"
+              ></path>
+            </svg>
+          </span>
+          <span class="leading-relaxed text-ink-2">{tr('home.introFavorites')}</span>
+        </li>
+      </ul>
+      <div class="mt-5 flex flex-wrap gap-2">
+        <a
+          href={href('/lineas', locale)}
+          class="rounded-lg border border-control-edge bg-surface-2 px-3.5 py-2 text-sm font-semibold text-ink transition hover:border-brand/60 focus-ring"
+        >
+          {tr('home.introExplore')}
+        </a>
+        <a
+          href={href('/mapa', locale)}
+          class="rounded-lg border border-control-edge bg-surface-2 px-3.5 py-2 text-sm font-semibold text-ink transition hover:border-brand/60 focus-ring"
+        >
+          {tr('home.introNearby')}
+        </a>
+      </div>
+    </div>
+  </section>
+
+  {/* Decide la intro ANTES del primer pintado: sin esto, un usuario con favoritos ve la
+      tarjeta completa (~400 px) y luego la ve desaparecer cuando el módulo diferido de
+      FavoriteStops la oculta tras getFavorites(). Script inline sincrono (se ejecuta
+      durante el parseo) que lee la clave de favoritos y aplica la MISMA clase 'hidden'
+      que FavoriteStops gestiona despues (corrigiendo si el vault dice otra cosa); el
+      vault cifrado no se toca, solo este JSON plano local. Su hash va en la CSP */}
+  <script is:inline>
+    (function () {
+      try {
+        var raw = localStorage.getItem('madmovil:favorites');
+        if (raw) {
+          var doc = JSON.parse(raw);
+          var list = Array.isArray(doc) ? doc : doc && doc.favorites;
+          if (Array.isArray(list) && list.length > 0) {
+            var intro = document.getElementById('home-intro');
+            if (intro) intro.classList.add('hidden');
+          }
+        }
+      } catch (e) {
+        /* storage bloqueado o doc invalido: la intro se queda visible */
+      }
+    })();
+  </script>
+
+  <FavoriteStops />
+</Layout>

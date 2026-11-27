@@ -1,0 +1,495 @@
+---
+import Layout from '../layouts/Layout.astro';
+import { ApiError, getCrtmLines, getLines } from '../lib/api';
+import { crtmLineItemStyle, trimMunicipality } from '../lib/crtm';
+import { href, t, tN, translator } from '../lib/i18n';
+import { chipStyle } from '../lib/contrast';
+import type { Line } from '../types/api';
+import type { CrtmLineSummary } from '../types/crtm';
+
+export const prerender = false;
+
+const locale = Astro.locals.locale ?? 'es';
+const tr = translator(locale);
+
+let lines: Line[] | null = null;
+let error: string | null = null;
+
+// CRTM en paralelo con fail-soft: si cae, la EMT sigue y viceversa
+let crtmLines: CrtmLineSummary[] | null = null;
+let crtmError: string | null = null;
+
+const [emtResult, crtmResult] = await Promise.allSettled([getLines(), getCrtmLines()]);
+
+if (emtResult.status === 'fulfilled') {
+  lines = emtResult.value.lines;
+} else {
+  error = emtResult.reason instanceof ApiError ? emtResult.reason.message : t(locale, 'common.unexpectedError');
+}
+
+if (crtmResult.status === 'fulfilled') {
+  crtmLines = crtmResult.value.lines;
+} else {
+  crtmError = crtmResult.reason instanceof ApiError ? crtmResult.reason.message : t(locale, 'common.unexpectedError');
+}
+
+// Grupos EMT por código (los que no encajan caen en "Otras líneas" para no perderlos nunca)
+const GROUPS: Array<{ codes: string[]; name: string }> = [
+  { codes: ['110'], name: tr('lines.group.conventional') },
+  { codes: ['120'], name: tr('lines.group.seasonal') },
+  { codes: ['155'], name: tr('lines.group.m') },
+  { codes: ['210'], name: tr('lines.group.university') },
+  { codes: ['160', '171'], name: tr('lines.group.special') },
+  { codes: ['410'], name: tr('lines.group.airport') },
+  { codes: ['320', '420'], name: tr('lines.group.night') },
+];
+
+const byLabel = (a: Line, b: Line) => a.label.localeCompare(b.label, 'es', { numeric: true });
+
+const sections = lines
+  ? GROUPS.map((g) => ({ name: g.name, lines: lines!.filter((l) => g.codes.includes(l.group ?? '')).sort(byLabel) }))
+      .filter((s) => s.lines.length > 0)
+  : [];
+
+if (lines) {
+  const known = new Set(GROUPS.flatMap((g) => g.codes));
+  const otras = lines.filter((l) => !known.has(l.group ?? '')).sort(byLabel);
+  if (otras.length > 0) sections.push({ name: tr('lines.group.other'), lines: otras });
+}
+
+const byCrtmLabel = (a: CrtmLineSummary, b: CrtmLineSummary) =>
+  a.label.localeCompare(b.label, 'es', { numeric: true }) || trimMunicipality(a.municipality).localeCompare(trimMunicipality(b.municipality), 'es');
+
+// Los urbanos se agrupan por municipio para digerir los labels duplicados ('1' × 24);
+// el metro ligero y el metro van en secciones propias (pocas líneas, color oficial cada una)
+const crtmInter = crtmLines?.filter((l) => l.network === 'interurban').sort(byCrtmLabel) ?? [];
+const crtmMl = crtmLines?.filter((l) => l.network === 'ml').sort(byCrtmLabel) ?? [];
+const crtmMetro = crtmLines?.filter((l) => l.network === 'metro').sort(byCrtmLabel) ?? [];
+const crtmCercanias = crtmLines?.filter((l) => l.network === 'cercanias').sort(byCrtmLabel) ?? [];
+const crtmUrbans = crtmLines?.filter((l) => l.network === 'urban').sort(byCrtmLabel) ?? [];
+const urbanByMunicipality = new Map<string, CrtmLineSummary[]>();
+for (const l of crtmUrbans) {
+  const muni = trimMunicipality(l.municipality);
+  urbanByMunicipality.set(muni, [...(urbanByMunicipality.get(muni) ?? []), l]);
+}
+const urbanMunicipalities = [...urbanByMunicipality.entries()].sort(([a], [b]) => a.localeCompare(b, 'es'));
+
+const total = (lines?.length ?? 0) + (crtmLines?.length ?? 0);
+
+// Índice de grupos: una entrada por sección EMT y una por RED del CRTM (nunca por
+// municipio — son 32). `key` es lo que viaja en data-group-filter y tiene que coincidir
+// con el data-group-name / data-group-family de la sección, letra por letra.
+type GroupFilter = { key: string; label: string; suffix?: string; count: number; dot?: string };
+
+// El color del punto es el MÁS REPETIDO del grupo, no el de la primera línea: en
+// convencionales la primera es la 001, que va en cian y no en el azul de las otras 176
+function dominantColor(group: Line[]): string | undefined {
+  const tally = new Map<string, number>();
+  for (const l of group) if (l.color) tally.set(l.color, (tally.get(l.color) ?? 0) + 1);
+  let best: string | undefined;
+  let seen = 0;
+  for (const [color, n] of tally) if (n > seen) [best, seen] = [color, n];
+  return best ? `#${best}` : undefined;
+}
+
+const emtFilters: GroupFilter[] = sections.map((s) => ({
+  key: s.name,
+  label: s.name,
+  count: s.lines.length,
+  dot: dominantColor(s.lines),
+}));
+
+const crtmFilters: GroupFilter[] = [
+  { key: tr('lines.crtmInterurban'), label: tr('lines.crtmInterurbanShort'), suffix: ' CRTM', count: crtmInter.length, dot: 'var(--color-crtm-inter)' },
+  { key: tr('lines.crtmMl'), label: tr('lines.crtmMlShort'), suffix: ' CRTM', count: crtmMl.length, dot: 'var(--color-crtm-ml)' },
+  { key: tr('lines.crtmMetro'), label: tr('lines.crtmMetroShort'), suffix: ' CRTM', count: crtmMetro.length, dot: 'var(--color-crtm-metro)' },
+  // Cercanías sin sufijo CRTM: no es una red del consorcio sino de Renfe, y "Cercanías"
+  // no colisiona con ningún grupo EMT en la fila de móvil
+  { key: tr('lines.crtmCercanias'), label: tr('lines.crtmCercaniasShort'), suffix: '', count: crtmCercanias.length, dot: 'var(--color-crtm-cercanias)' },
+  { key: tr('lines.crtmUrban'), label: tr('lines.crtmUrbanShort'), suffix: ' CRTM', count: crtmUrbans.length, dot: 'var(--color-crtm-urban)' },
+].filter((f) => f.count > 0);
+
+// Listado pesado y sin estado de usuario: HTML cacheable en edge (el filtro es client-side
+// sobre el DOM ya renderizado). s-maxage 3600 (W2, auditoría CPU 2026-11-27). Solo si ALGUNA
+// familia respondió: con ambas caídas el listado sale vacío con sus avisos de error y no
+// debe quedarse 1 hora en la cache
+if (lines || crtmLines) {
+  Astro.response.headers.set('Cache-Control', 'public, max-age=60, s-maxage=3600');
+}
+
+// El label se muestra SIEMPRE tal cual ("001" y "1" son líneas distintas) y el enlace usa el original
+function normalizeSearch(s: string): string {
+  return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase();
+}
+---
+
+<Layout title={tr('lines.title')} description={tr('lines.seoDescription')}>
+  {/* Losa de búsqueda, igual que la home y la parada */}
+  <section class="rounded-2xl bg-brand-soft px-4 py-4 sm:px-5 sm:py-5">
+    <p class="text-[11px] font-bold uppercase tracking-[0.14em] text-brand-ink">{tr('lines.kicker')}</p>
+    <h1 class="mt-1.5 text-2xl font-bold leading-[1.15] tracking-tight text-pretty sm:text-3xl">{tr('lines.heading')}</h1>
+
+    <label for="line-filter" class="sr-only">{tr('lines.searchLabel')}</label>
+    <div class="relative mt-3">
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        class="pointer-events-none absolute left-3.5 top-1/2 size-[17px] -translate-y-1/2 text-ink-3"
+        aria-hidden="true"
+      >
+        <circle cx="11" cy="11" r="7"></circle>
+        <path d="m20 20-4.2-4.2"></path>
+      </svg>
+      <input
+        id="line-filter"
+        type="search"
+        placeholder={tr('lines.searchPlaceholder')}
+        autocomplete="off"
+        class="h-12 w-full appearance-none rounded-xl border border-line-strong bg-surface pl-10 pr-4 text-base text-ink outline-none transition placeholder:text-ink-3 hover:border-ink-3 focus:border-brand focus:ring-2 focus:ring-brand/25 [&::-webkit-search-cancel-button]:hidden"
+      />
+    </div>
+    {
+      !error && (
+        <p id="line-filter-status" class="mt-2 text-[12.5px] tabular-nums text-ink-2" role="status" aria-live="polite">
+          {tN(locale, total, 'lines.total', { n: total })}
+        </p>
+      )
+    }
+    {
+      !error && crtmError && (
+        <p class="mt-2 text-[12.5px] font-medium text-ink-3">{tr('lines.crtmUnavailable')}</p>
+      )
+    }
+  </section>
+
+  {
+    error ? (
+      <section class="mt-5" role="alert">
+        <p class="flex items-start gap-3 rounded-xl border border-danger bg-danger-soft px-4 py-3 text-sm font-medium text-danger-ink">
+          <span class="mt-px grid size-5 shrink-0 place-items-center rounded-full bg-danger text-[11px] font-bold text-page" aria-hidden="true">
+            !
+          </span>
+          <span>{error} {tr('error.tryAgainSoon')}</span>
+        </p>
+      </section>
+    ) : (
+      <>
+        {/* Índice de grupos + listado. Desde lg el índice se va a un raíl pegajoso de
+            13rem y deja de competir por el ancho: las 11 entradas se ven de golpe, con
+            su recuento y su color, y ya no hay fila que se desborde ni barra horizontal.
+            La columna del listado va con lg:-mt-5 para comerse el mt-5 de la primera
+            sección VISIBLE (sea cual sea, porque las ocultas colapsan su margen) y que
+            su cabecera caiga clavada a la altura de la primera entrada del raíl. */}
+        <div class="mt-4 lg:mt-5 lg:grid lg:grid-cols-[13rem_minmax(0,1fr)] lg:items-start lg:gap-6">
+          <nav
+            class="flex flex-wrap gap-1.5 lg:sticky lg:top-(--mm-sticky) lg:flex-col lg:flex-nowrap lg:gap-0.5"
+            aria-label={tr('lines.filterAria')}
+          >
+            <button type="button" data-group-filter="" aria-pressed="true" class="group-filter focus-ring">
+              <span>{tr('lines.all')}</span>
+              <span class="group-filter-count tabular-nums" data-filter-count>{total}</span>
+            </button>
+
+            <span class="mx-2.5 my-2 hidden h-px bg-line lg:block" aria-hidden="true"></span>
+            <p class="hidden px-2.5 pb-1 text-[11px] font-bold uppercase tracking-[0.14em] text-ink-3 lg:block">EMT</p>
+
+            {emtFilters.map((f) => (
+              <button type="button" data-group-filter={f.key} aria-pressed="false" class="group-filter focus-ring">
+                {f.dot && <span class="group-filter-dot" style={`background:${f.dot}`} aria-hidden="true" />}
+                <span>{f.label}</span>
+                <span class="group-filter-count tabular-nums" data-filter-count>
+                  {f.count}
+                </span>
+              </button>
+            ))}
+
+            {crtmFilters.length > 0 && (
+              <p class="hidden px-2.5 pb-1 pt-3.5 text-[11px] font-bold uppercase tracking-[0.14em] text-ink-3 lg:block">
+                CRTM
+              </p>
+            )}
+
+            {crtmFilters.map((f) => (
+              <button type="button" data-group-filter={f.key} aria-pressed="false" class="group-filter focus-ring">
+                {f.dot && <span class="group-filter-dot" style={`background:${f.dot}`} aria-hidden="true" />}
+                <span>
+                  {f.label}
+                  <span class="lg:hidden">{f.suffix}</span>
+                </span>
+                <span class="group-filter-count tabular-nums" data-filter-count>
+                  {f.count}
+                </span>
+              </button>
+            ))}
+          </nav>
+
+          <div class="min-w-0 lg:-mt-5">
+            <div id="lines-empty" class="mt-5 hidden rounded-xl border border-line bg-surface px-6 py-8 text-center shadow-xs">
+              <p class="font-semibold text-ink">{tr('lines.emptyTitle')}</p>
+              <p class="mt-1 text-sm text-ink-3">{tr('lines.emptyBody')}</p>
+            </div>
+
+            {sections.map((s) => (
+            <section data-group-section data-group-name={s.name} class="mt-5" aria-label={s.name}>
+              <h2 class="flex items-center gap-2.5">
+                <span class="text-[11px] font-bold uppercase tracking-[0.14em] text-ink-3">{s.name}</span>
+                <span class="text-[11px] font-bold tabular-nums text-ink-3" data-count>
+                  {s.lines.length}
+                </span>
+                <span class="h-px flex-1 bg-line" aria-hidden="true"></span>
+              </h2>
+              {/* Rejilla de columnas fijas: los labels largos ya no descuadran la fila */}
+              <div class="mt-2.5 grid gap-1.5" style="grid-template-columns: repeat(auto-fill, minmax(52px, 1fr));">
+                {s.lines.map((line) => (
+                  <a
+                    href={href(`/linea/${line.label}`, locale)}
+                    data-line-chip
+                    data-search={normalizeSearch(`${line.label} ${line.nameA} ${line.nameB}`)}
+                    class:list={[
+                      'grid h-9 place-items-center overflow-hidden rounded-lg px-1 text-center text-[13.5px] font-bold tabular-nums transition hover:-translate-y-0.5 hover:shadow-sm active:translate-y-0 focus-ring',
+                      line.label.length > 4 && 'text-[11.5px]',
+                      line.color ? 'ring-1 ring-black/10' : 'border border-control-edge bg-surface-2 text-ink',
+                    ]}
+                    style={line.color ? chipStyle(`#${line.color}`) : undefined}
+                    title={t(locale, 'line.chipTitle', { label: line.label, name: `${line.nameA} ↔ ${line.nameB}` })}
+                  >
+                    {line.label}
+                  </a>
+                ))}
+              </div>
+            </section>
+          ))}
+
+          {crtmInter.length > 0 && (
+            <section data-group-section data-group-name={tr('lines.crtmInterurban')} data-group-family={tr('lines.crtmInterurban')} class="mt-5" aria-label={tr('lines.crtmInterurban')}>
+              <h2 class="flex items-center gap-2.5">
+                <span class="text-[11px] font-bold uppercase tracking-[0.14em] text-crtm-inter-ink">{tr('lines.crtmInterurban')}</span>
+                <span class="text-[11px] font-bold tabular-nums text-ink-3" data-count>
+                  {crtmInter.length}
+                </span>
+                <span class="h-px flex-1 bg-line" aria-hidden="true"></span>
+              </h2>
+              <div class="mt-2.5 grid gap-1.5" style="grid-template-columns: repeat(auto-fill, minmax(52px, 1fr));">
+                {crtmInter.map((line) => (
+                  <a
+                    href={href(`/linea/crtm/${line.routeId}`, locale)}
+                    data-line-chip
+                    data-search={normalizeSearch(`${line.label} ${line.name} ${trimMunicipality(line.municipality)}`)}
+                    class="crtm-badge grid h-9 place-items-center overflow-hidden rounded-lg px-1 text-center text-[13.5px] font-bold tabular-nums transition hover:-translate-y-0.5 hover:shadow-sm active:translate-y-0 focus-ring"
+                    data-network="interurban"
+                    style={crtmLineItemStyle(line)}
+                    title={t(locale, 'line.chipTitleCrtm', { label: line.label, name: line.name, muni: trimMunicipality(line.municipality) })}
+                  >
+                    {line.label}
+                  </a>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {crtmMl.length > 0 && (
+            <section data-group-section data-group-name={tr('lines.crtmMl')} data-group-family={tr('lines.crtmMl')} class="mt-5" aria-label={tr('lines.crtmMl')}>
+              <h2 class="flex items-center gap-2.5">
+                <span class="text-[11px] font-bold uppercase tracking-[0.14em] text-crtm-ml-ink">{tr('lines.crtmMl')}</span>
+                <span class="text-[11px] font-bold tabular-nums text-ink-3" data-count>
+                  {crtmMl.length}
+                </span>
+                <span class="h-px flex-1 bg-line" aria-hidden="true"></span>
+              </h2>
+              <div class="mt-2.5 grid gap-1.5" style="grid-template-columns: repeat(auto-fill, minmax(52px, 1fr));">
+                {crtmMl.map((line) => (
+                  <a
+                    href={href(`/linea/crtm/${line.routeId}`, locale)}
+                    data-line-chip
+                    data-search={normalizeSearch(`${line.label} ${line.name} ${trimMunicipality(line.municipality)}`)}
+                    class="crtm-badge grid h-9 place-items-center overflow-hidden rounded-lg px-1 text-center text-[13.5px] font-bold tabular-nums transition hover:-translate-y-0.5 hover:shadow-sm active:translate-y-0 focus-ring"
+                    data-network="ml"
+                    style={crtmLineItemStyle(line)}
+                    title={t(locale, 'line.chipTitleCrtm', { label: line.label, name: line.name, muni: trimMunicipality(line.municipality) })}
+                  >
+                    {line.label}
+                  </a>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {crtmMetro.length > 0 && (
+            <section data-group-section data-group-name={tr('lines.crtmMetro')} data-group-family={tr('lines.crtmMetro')} class="mt-5" aria-label={tr('lines.crtmMetro')}>
+              <h2 class="flex items-center gap-2.5">
+                <span class="text-[11px] font-bold uppercase tracking-[0.14em] text-crtm-metro-ink">{tr('lines.crtmMetro')}</span>
+                <span class="text-[11px] font-bold tabular-nums text-ink-3" data-count>
+                  {crtmMetro.length}
+                </span>
+                <span class="h-px flex-1 bg-line" aria-hidden="true"></span>
+              </h2>
+              {crtmMetro.some((line) => line.noSchedule) && (
+                <p class="mt-2 flex items-start gap-2 rounded-lg border border-warn bg-warn-soft px-3 py-2 text-[12.5px] font-medium text-warn-ink">
+                  <span class="mt-[3px] grid size-4 shrink-0 place-items-center rounded-full bg-warn text-[9px] font-bold text-page" aria-hidden="true">
+                    !
+                  </span>
+                  {tr('crtm.noScheduleShort')}
+                </p>
+              )}
+              <div class="mt-2.5 grid gap-1.5" style="grid-template-columns: repeat(auto-fill, minmax(52px, 1fr));">
+                {crtmMetro.map((line) => (
+                  <a
+                    href={href(`/linea/crtm/${line.routeId}`, locale)}
+                    data-line-chip
+                    data-search={normalizeSearch(`${line.label} ${line.name} ${trimMunicipality(line.municipality)}`)}
+                    class="crtm-badge grid h-9 place-items-center overflow-hidden rounded-lg px-1 text-center text-[13.5px] font-bold tabular-nums transition hover:-translate-y-0.5 hover:shadow-sm active:translate-y-0 focus-ring"
+                    data-network="metro"
+                    style={crtmLineItemStyle(line)}
+                    title={t(
+                      locale,
+                      line.noSchedule ? 'line.chipTitleCrtmNoSchedule' : 'line.chipTitleCrtm',
+                      { label: line.label, name: line.name, muni: trimMunicipality(line.municipality) }
+                    )}
+                  >
+                    {line.label}
+                  </a>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {crtmCercanias.length > 0 && (
+            <section data-group-section data-group-name={tr('lines.crtmCercanias')} data-group-family={tr('lines.crtmCercanias')} class="mt-5" aria-label={tr('lines.crtmCercanias')}>
+              <h2 class="flex items-center gap-2.5">
+                <span class="text-[11px] font-bold uppercase tracking-[0.14em] text-crtm-cercanias-ink">{tr('lines.crtmCercanias')}</span>
+                <span class="text-[11px] font-bold tabular-nums text-ink-3" data-count>
+                  {crtmCercanias.length}
+                </span>
+                <span class="h-px flex-1 bg-line" aria-hidden="true"></span>
+              </h2>
+              <div class="mt-2.5 grid gap-1.5" style="grid-template-columns: repeat(auto-fill, minmax(52px, 1fr));">
+                {crtmCercanias.map((line) => (
+                  <a
+                    href={href(`/linea/crtm/${line.routeId}`, locale)}
+                    data-line-chip
+                    data-search={normalizeSearch(`${line.label} ${line.name} ${trimMunicipality(line.municipality)}`)}
+                    class="crtm-badge grid h-9 place-items-center overflow-hidden rounded-lg px-1 text-center text-[13.5px] font-bold tabular-nums transition hover:-translate-y-0.5 hover:shadow-sm active:translate-y-0 focus-ring"
+                    data-network="cercanias"
+                    style={crtmLineItemStyle(line)}
+                    title={t(locale, 'line.chipTitleCrtm', { label: line.label, name: line.name, muni: trimMunicipality(line.municipality) })}
+                  >
+                    {line.label}
+                  </a>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {urbanMunicipalities.map(([muni, urbanLines]) => (
+            <section data-group-section data-group-name={t(locale, 'lines.urbanGroup', { muni })} data-group-family={tr('lines.crtmUrban')} class="mt-5" aria-label={t(locale, 'lines.urbanOf', { muni })}>
+              <h2 class="flex items-center gap-2.5">
+                <span class="text-[11px] font-bold uppercase tracking-[0.14em] text-crtm-urban-ink">{muni}</span>
+                <span class="text-[11px] font-bold tabular-nums text-ink-3" data-count>
+                  {urbanLines.length}
+                </span>
+                <span class="h-px flex-1 bg-line" aria-hidden="true"></span>
+              </h2>
+              <div class="mt-2.5 grid gap-1.5" style="grid-template-columns: repeat(auto-fill, minmax(52px, 1fr));">
+                {urbanLines.map((line) => (
+                  <a
+                    href={href(`/linea/crtm/${line.routeId}`, locale)}
+                    data-line-chip
+                    data-search={normalizeSearch(`${line.label} ${line.name} ${muni}`)}
+                    class="crtm-badge grid h-9 place-items-center overflow-hidden rounded-lg px-1 text-center text-[13.5px] font-bold tabular-nums transition hover:-translate-y-0.5 hover:shadow-sm active:translate-y-0 focus-ring"
+                    data-network="urban"
+                    style={crtmLineItemStyle(line)}
+                    title={t(locale, 'line.chipTitleCrtm', { label: line.label, name: line.name, muni })}
+                  >
+                    {line.label}
+                  </a>
+                ))}
+              </div>
+            </section>
+          ))}
+          </div>
+        </div>
+      </>
+    )
+  }
+</Layout>
+
+<script>
+  import { clientLocale, t, tN } from '../lib/i18n';
+
+  const locale = clientLocale();
+  const input = document.getElementById('line-filter') as HTMLInputElement | null;
+  const sections = Array.from(document.querySelectorAll<HTMLElement>('[data-group-section]'));
+  const filters = Array.from(document.querySelectorAll<HTMLButtonElement>('.group-filter'));
+  const statusEl = document.getElementById('line-filter-status');
+  const emptyEl = document.getElementById('lines-empty');
+
+  const inGroup = (section: HTMLElement, key: string): boolean =>
+    key === '' || section.dataset.groupName === key || section.dataset.groupFamily === key;
+
+  const total = sections.reduce((n, s) => n + s.querySelectorAll('[data-line-chip]').length, 0);
+
+  let group = '';
+
+  function normalize(s: string): string {
+    return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().trim();
+  }
+
+  function apply(): void {
+    const q = normalize(input?.value ?? '');
+    let visible = 0;
+    // Coincidencias con la BÚSQUEDA por sección, al margen del grupo elegido: son las
+    // que alimentan los recuentos del índice (lo que verías si pulsaras ese grupo)
+    const matches = new Map<HTMLElement, number>();
+
+    for (const section of sections) {
+      const showGroup = inGroup(section, group);
+      let match = 0;
+      let count = 0;
+      section.querySelectorAll<HTMLElement>('[data-line-chip]').forEach((chip) => {
+        const hit = q === '' || (chip.dataset.search ?? '').includes(q);
+        if (hit) match++;
+        const show = showGroup && hit;
+        chip.classList.toggle('hidden', !show);
+        if (show) count++;
+      });
+      matches.set(section, match);
+      visible += count;
+      section.classList.toggle('hidden', count === 0);
+      const countEl = section.querySelector<HTMLElement>('[data-count]');
+      if (countEl) countEl.textContent = String(count);
+    }
+
+    for (const filter of filters) {
+      const countEl = filter.querySelector<HTMLElement>('[data-filter-count]');
+      if (!countEl) continue;
+      const key = filter.dataset.groupFilter ?? '';
+      let n = 0;
+      for (const [section, match] of matches) if (inGroup(section, key)) n += match;
+      countEl.textContent = String(n);
+    }
+
+    if (statusEl) {
+      statusEl.textContent =
+        q === '' && group === ''
+          ? tN(locale, total, 'lines.total', { n: total })
+          : t(locale, 'lines.visibleOf', { visible, total });
+    }
+    emptyEl?.classList.toggle('hidden', visible !== 0);
+  }
+
+  input?.addEventListener('input', apply);
+
+  // El aspecto del botón activo sale entero de aria-pressed (.group-filter en global.css):
+  // el script solo mueve el estado, así no hay que duplicar aquí las clases de las dos formas
+  for (const filter of filters) {
+    filter.addEventListener('click', () => {
+      group = filter.dataset.groupFilter ?? '';
+      for (const f of filters) f.setAttribute('aria-pressed', String(f === filter));
+      apply();
+    });
+  }
+</script>

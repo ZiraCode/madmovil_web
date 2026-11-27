@@ -1,0 +1,158 @@
+---
+import { chipFallbackColors, lineColorChipStyle, networkLabel } from '../lib/crtm';
+import { href, t, translator } from '../lib/i18n';
+import type { ConnectionsData, ConnectionsLine, ConnectionsNetwork } from '../types/connections';
+
+// Sección "Transbordos" de la ficha de parada (GET /connections, 2026-10-12): líneas de
+// OTRAS paradas físicas en un radio a pie, agrupadas por red. Los labels están duplicados
+// entre redes ('3' de EMT y '3' de metro son líneas DISTINTAS): el grupo de red es el
+// contexto obligatorio del render y NUNCA se deduplica por label. Las líneas de la propia
+// parada ya no vienen (el server las excluye). Solo se monta cuando transfers.count > 0;
+// count 0 (parada aislada) y cualquier error de fetch ocultan la sección entera.
+
+interface Props {
+  data: ConnectionsData;
+}
+
+const { data } = Astro.props;
+const locale = Astro.locals.locale ?? 'es';
+const tr = translator(locale);
+
+// En intercambiadores grandes (Moncloa, Atocha) el bloque pasa de 100 líneas: si un grupo
+// (o el total) supera el umbral, la sección se plega en un <details> cuyo resumen lleva el
+// recuento por red
+const COLLAPSE_AT = 15;
+const groups = data.transfers.groups.filter((g) => g.lines.length > 0);
+const totalLines = data.transfers.count;
+const collapsed = groups.some((g) => g.lines.length > COLLAPSE_AT) || totalLines > COLLAPSE_AT;
+
+const NET_TONE: Record<ConnectionsNetwork, string> = {
+  emt: 'border border-line bg-surface-2 text-ink-2',
+  interurban: 'bg-crtm-inter-soft text-crtm-inter-ink',
+  urban: 'bg-crtm-urban-soft text-crtm-urban-ink',
+  ml: 'bg-crtm-ml-soft text-crtm-ml-ink',
+  metro: 'bg-crtm-metro-soft text-crtm-metro-ink',
+  cercanias: 'bg-crtm-cercanias-soft text-crtm-cercanias-ink',
+};
+
+const CHIP = 'grid h-7 min-w-[34px] place-items-center rounded-md px-1.5 text-[13px] font-bold tabular-nums';
+
+function netName(network: ConnectionsNetwork): string {
+  return network === 'emt' ? t(locale, 'home.network.emt') : networkLabel(locale, network);
+}
+
+// EMT por label (regla de la casa: NUNCA por lineId — el de la "1" es "001" y "001" es el
+// label de OTRA línea real); CRTM por routeId (labels duplicados entre redes y municipios)
+function chipHref(line: ConnectionsLine): string | null {
+  if (!line.id) return null;
+  const path = line.source === 'emt' ? `/linea/${encodeURIComponent(line.label)}` : `/linea/crtm/${encodeURIComponent(line.id)}`;
+  return href(path, locale);
+}
+
+function chipStyle(line: ConnectionsLine): string | undefined {
+  if (line.color) return lineColorChipStyle(`#${line.color}`);
+  if (line.source === 'emt') return undefined;
+  const fallback = chipFallbackColors(line.label, line.network);
+  return fallback ? lineColorChipStyle(fallback.color) : undefined;
+}
+---
+
+<section id="transfers-section" class="mt-8" aria-label={tr('transfers.aria')}>
+  <div class="mb-2.5 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
+    <h2 class="text-[17px] font-bold tracking-tight">{tr('transfers.heading')}</h2>
+    <p class="text-[12px] font-medium text-ink-3">{t(locale, 'transfers.radius', { m: data.radiusM })}</p>
+  </div>
+
+  <div class="rounded-xl border border-line bg-surface px-3 py-2.5 shadow-xs">
+    <details class="group" open={!collapsed}>
+      {collapsed && (
+        <summary class="-mx-1 flex cursor-pointer list-none flex-wrap items-center gap-x-2 gap-y-1.5 rounded-md px-1 py-1 transition hover:bg-surface-2 focus-ring">
+          <span class="flex min-w-0 flex-wrap items-center gap-1.5">
+            {groups.map((g) => (
+              <span class={`rounded-full px-2 py-0.5 text-[11px] font-bold ${NET_TONE[g.network]}`}>
+                {netName(g.network)} <span class="tabular-nums">{g.lines.length}</span>
+              </span>
+            ))}
+          </span>
+          <span class="ml-auto flex shrink-0 items-center gap-1.5 text-[12px] font-semibold text-brand-ink">
+            {t(locale, 'transfers.show', { n: totalLines })}
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="size-4 text-ink-3 transition group-open:rotate-180" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
+            </svg>
+          </span>
+        </summary>
+      )}
+      <div class:list={[collapsed && 'mt-1.5 border-t border-line pt-1']}>
+        {groups.map((g) => (
+          <div class="border-t border-line py-2.5 first:border-t-0 last:pb-0.5">
+            <p class="mb-1.5 flex flex-wrap items-center gap-x-2 gap-y-1">
+              <span class={`rounded-full px-2 py-0.5 text-[11px] font-bold ${NET_TONE[g.network]}`}>{netName(g.network)}</span>
+              {g.lines.some((l) => l.noSchedule) && (
+                <span class="rounded-full bg-warn-soft px-2 py-0.5 text-[11px] font-bold text-warn-ink">{tr('crtm.noScheduleTitle')}</span>
+              )}
+              <span class="text-[11.5px] font-medium tabular-nums text-ink-3">{t(locale, 'transfers.distance', { m: g.distanceM })}</span>
+            </p>
+            <div class="flex flex-wrap gap-1.5">
+              {g.lines.map((line) => {
+                const target = chipHref(line);
+                const style = chipStyle(line);
+                // EMT sin color del API: neutro + data-line (linecolors lo pinta en cliente);
+                // CRTM sin color resuelto: tono de red vía .crtm-badge[data-network]
+                const cls = [
+                  CHIP,
+                  line.source === 'crtm' && 'crtm-badge',
+                  target && 'transition focus-ring',
+                  !style && line.source === 'emt' && 'bg-ink text-surface',
+                ]
+                  .filter(Boolean)
+                  .join(' ');
+                const title = line.name ?? t(locale, 'line.viewLine', { label: line.label });
+                return target ? (
+                  <a
+                    href={target}
+                    class={cls}
+                    style={style}
+                    data-network={line.source === 'crtm' ? line.network : undefined}
+                    data-line={line.source === 'emt' ? line.label : undefined}
+                    title={title}
+                  >
+                    {line.label}
+                  </a>
+                ) : (
+                  <span
+                    class={cls}
+                    style={style}
+                    data-network={line.source === 'crtm' ? line.network : undefined}
+                    data-line={line.source === 'emt' ? line.label : undefined}
+                    title={title}
+                  >
+                    {line.label}
+                  </span>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+    </details>
+  </div>
+
+  {
+    data.degraded && data.degraded.length > 0 && (
+      <p class="mt-2 rounded-lg border border-warn bg-warn-soft px-3 py-2 text-[12px] font-medium text-warn-ink" role="status">
+        {t(locale, 'transfers.degraded', {
+          sources: data.degraded.map((s) => (s === 'emt' ? 'EMT' : 'CRTM')).join(locale === 'en' ? ' and ' : ' y '),
+        })}
+      </p>
+    )
+  }
+</section>
+
+<script>
+  import { paintAndFetchLineColors } from '../lib/linecolors';
+
+  // Colorea los chips EMT (data-line) SOLO de esta sección: sin root, el painter recorre el
+  // documento entero y en /parada/crtm pisaría el color oficial de los chips CRTM vecinos
+  // (sus labels colisionan con labels EMT homónimos) tras pedirlos a /lines/search
+  void paintAndFetchLineColors(document.getElementById('transfers-section') ?? document);
+</script>

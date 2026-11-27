@@ -1,0 +1,107 @@
+---
+// Caja de búsqueda unificada de la home (líneas + paradas de todas las redes contra
+// GET /search). El dropdown con resultados lo maneja src/lib/searchwidget.ts; este
+// componente es el marcado del combobox + el script de arranque. El formulario sigue
+// siendo un GET: sin JS (o con el dropdown cerrado) el server renderiza los mismos
+// resultados en /?q=… (fallback SSR de index.astro, mismo renderer).
+import { href, translator } from '../lib/i18n';
+
+const locale = Astro.locals.locale ?? 'es';
+const tr = translator(locale);
+
+interface Props {
+  query?: string;
+}
+
+const { query = '' } = Astro.props;
+---
+
+<section id="unified-search" class="rounded-2xl bg-brand-soft px-4 py-4 sm:px-5 sm:py-5">
+  <p class="text-[11px] font-bold uppercase tracking-[0.14em] text-brand-ink">{tr('home.kicker')}</p>
+  <h1 class="mt-1.5 text-2xl font-bold leading-[1.15] tracking-tight text-pretty sm:text-3xl">
+    {tr('home.heading')}
+  </h1>
+
+  <form method="get" action={href('/', locale)} class="mt-3 flex gap-2">
+    <label for="q" class="sr-only">{tr('home.searchLabel')}</label>
+    <div class="relative min-w-0 flex-1">
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        class="pointer-events-none absolute left-3.5 top-1/2 size-[17px] -translate-y-1/2 text-ink-3"
+        aria-hidden="true"
+      >
+        <circle cx="11" cy="11" r="7"></circle>
+        <path d="m20 20-4.2-4.2"></path>
+      </svg>
+      <input
+        id="q"
+        type="search"
+        name="q"
+        value={query}
+        placeholder={tr('home.searchPlaceholder')}
+        autocomplete="off"
+        enterkeyhint="search"
+        role="combobox"
+        aria-expanded="false"
+        aria-controls="us-body"
+        aria-autocomplete="list"
+        class="h-12 w-full appearance-none rounded-xl border border-control-edge bg-surface pl-10 pr-10 text-base text-ink outline-none transition placeholder:text-ink-3 hover:border-ink-3 focus:border-brand focus:ring-2 focus:ring-brand/25 [&::-webkit-search-cancel-button]:hidden"
+      />
+      {
+        query && (
+          <a
+            href={href('/', locale)}
+            aria-label={tr('home.clearSearch')}
+            class="absolute right-3 top-1/2 grid size-5 -translate-y-1/2 place-items-center rounded-full bg-surface-2 text-xs font-bold text-ink-2 transition hover:bg-line focus-ring"
+          >
+            ×
+          </a>
+        )
+      }
+      <!-- Dropdown de resultados: absolute bajo la caja, encima del contenido -->
+      <div data-us-panel class="absolute left-0 right-0 top-full z-30 mt-2 hidden">
+        <div
+          id="us-body"
+          data-us-body
+          role="listbox"
+          aria-label={tr('home.resultsAria')}
+          class="max-h-[min(26rem,65svh)] overflow-y-auto overscroll-contain rounded-xl border border-line bg-surface p-1.5 shadow-xl"
+        >
+        </div>
+      </div>
+    </div>
+    <button
+      type="submit"
+      class="flex h-12 shrink-0 items-center justify-center gap-2 rounded-xl bg-brand px-3.5 font-semibold text-on-brand shadow-xs transition hover:bg-brand-hover active:bg-brand-active focus-ring sm:px-5"
+    >
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2.2"
+        stroke-linecap="round"
+        class="size-[18px]"
+        aria-hidden="true"
+      >
+        <circle cx="11" cy="11" r="7"></circle>
+        <path d="m20 20-4.2-4.2"></path>
+      </svg>
+      <span class="hidden sm:inline">{tr('home.search')}</span>
+      <span class="sr-only sm:hidden">{tr('home.search')}</span>
+    </button>
+  </form>
+</section>
+
+<script>
+  import { initUnifiedSearch } from '../lib/searchwidget';
+  import { clientLocale } from '../lib/i18n';
+
+  const root = document.getElementById('unified-search');
+  if (root) initUnifiedSearch(root, clientLocale());
+</script>

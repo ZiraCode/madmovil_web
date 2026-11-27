@@ -1,0 +1,285 @@
+---
+import { t, translator } from '../lib/i18n';
+import { LIST_CLASS } from '../lib/cards';
+import { jsonForIsland } from '../lib/islands';
+import type { BusArrival } from '../types/api';
+
+interface Props {
+  stopId: string;
+  // W3 (auditoría CPU 2026-11-24): la ficha ya no fetchea las llegadas en SSR (respuesta
+  // no-store: 0 caché + cuota EMT por crawler); el tablón se llena client-side al montar
+  // con `loading`. initial/initialError se conservan para datos prefijados si hicieran falta
+  initial?: BusArrival[];
+  initialError?: string | null;
+  loading?: boolean;
+}
+
+const { stopId, initial = [], initialError = null, loading = false } = Astro.props;
+
+const locale = Astro.locals.locale ?? 'es';
+const tr = translator(locale);
+
+// Diseño 2a: el tiempo va en columna fija a la derecha (cifra + unidad) y nunca salta de línea.
+// «Llegando» se muestra como pastilla de marca; ≤5 min tiñe la cifra de marca.
+function etaInner(etaSec: number): string {
+  if (etaSec >= 999999) {
+    return '<span class="text-[13px] font-bold tabular-nums text-ink-2">&gt;45 min</span>';
+  }
+  const min = Math.floor(etaSec / 60);
+  if (min <= 0) {
+    return `<span class="rounded-full bg-brand px-2 py-0.5 text-xs font-bold text-on-brand">${tr('arrivals.arriving')}</span>`;
+  }
+  const tone = min <= 5 ? 'text-brand-ink' : 'text-ink';
+  const unitTone = min <= 5 ? 'text-brand-ink' : 'text-ink-3';
+  return `<span class="text-xl font-bold leading-none tracking-tight tabular-nums ${tone}">${min}</span><span class="text-[11px] font-semibold ${unitTone}">min</span>`;
+}
+---
+
+<section id="arrivals" data-stop-id={stopId} class="mt-7" aria-label={tr('arrivals.aria')}>
+  {/* Cabecera pegajosa en escritorio, igual que en /parada/crtm (misma aritmética:
+      --mm-sticky-bar en la caja, lg:pt-2 dentro, título en --mm-sticky): mantiene a la
+      vista el título, el estado y el botón de actualizar mientras se recorre la lista */}
+  <div class="mb-2.5 flex items-center gap-2 lg:sticky lg:top-(--mm-sticky-bar) lg:z-10 lg:-mt-2 lg:mb-0 lg:bg-page/85 lg:pt-2 lg:pb-2.5 lg:backdrop-blur-md">
+    <h2 class="flex-1 text-[17px] font-bold tracking-tight">{tr('arrivals.heading')}</h2>
+    {/* Piel por estado, el patrón de CrtmArrivalsBoard: verde pulsante solo con datos;
+        error/sin datos pasa a la piel neutra con reloj y deja de pulsar */}
+    <span
+      id="arrivals-mode"
+      class:list={[
+        'inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-semibold',
+        initialError ? 'bg-surface-2 text-ink-2' : 'bg-ok-soft text-ok-ink',
+      ]}
+    >
+      <span data-mode-live hidden={Boolean(initialError)}>
+        <span class="size-1.5 shrink-0 animate-pulse rounded-full bg-ok" aria-hidden="true"></span>
+      </span>
+      <span data-mode-sched hidden={!initialError}>
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          class="size-3"
+          aria-hidden="true"
+        >
+          <circle cx="12" cy="12" r="10"></circle>
+          <path d="M12 6v6l4 2"></path>
+        </svg>
+      </span>
+      <span id="arrivals-status">{initialError ? tr('arrivals.noData') : loading ? tr('status.updating') : tr('eta.now')}</span>
+    </span>
+    <button
+      id="arrivals-refresh"
+      type="button"
+      title={tr('arrivals.refresh')}
+      class="relative grid size-7 shrink-0 place-items-center rounded-lg border border-control-edge bg-surface text-ink-2 shadow-xs transition hover:bg-surface-2 hover:text-ink active:bg-surface-2 disabled:pointer-events-none disabled:opacity-50 before:absolute before:-inset-2 before:content-[''] focus-ring"
+    >
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        class="size-3.5"
+        aria-hidden="true"
+      >
+        <path d="M20 11a8 8 0 1 0-2.3 5.6"></path>
+        <path d="M20 4v7h-7"></path>
+      </svg>
+      <span class="sr-only">{tr('arrivals.refresh')}</span>
+    </button>
+  </div>
+
+  <script is:inline type="application/json" id="arrivals-data" set:html={jsonForIsland(initial)} />
+
+  {
+    initialError ? (
+      <p
+        class="flex items-start gap-3 rounded-xl border border-warn bg-warn-soft px-4 py-3 text-sm font-medium text-warn-ink"
+        role="alert"
+      >
+        <span class="mt-px grid size-5 shrink-0 place-items-center rounded-full bg-warn text-[11px] font-bold text-page" aria-hidden="true">
+          !
+        </span>
+        <span>{initialError}</span>
+      </p>
+    ) : loading && initial.length === 0 ? (
+      <p id="arrivals-loading" role="status" class="rounded-xl border border-line bg-surface px-6 py-8 text-center shadow-xs">
+        <span class="mt-1 block animate-pulse text-sm text-ink-3">{tr('status.updating')}</span>
+      </p>
+    ) : initial.length === 0 ? (
+      <p class="rounded-xl border border-line bg-surface px-6 py-8 text-center shadow-xs">
+        <span class="block font-semibold text-ink">{tr('arrivals.emptyTitle')}</span>
+        <span class="mt-1 block text-sm text-ink-3">{tr('arrivals.emptyBody')}</span>
+      </p>
+    ) : (
+      <ul id="arrivals-list" class={LIST_CLASS}>
+        {initial.map((a) => (
+          <li class="flex items-center gap-3 px-3 py-2.5">
+            <span
+              class="grid h-7 min-w-[34px] shrink-0 place-items-center rounded-md px-1.5 bg-ink text-[13px] font-bold tabular-nums text-surface"
+              data-line={a.line}
+            >
+              {a.line}
+            </span>
+            <span class="min-w-0 flex-1">
+              <span class="block truncate text-[13.5px] font-semibold text-ink">{a.destination}</span>
+              <span class="block text-[11px] tabular-nums text-ink-3">{t(locale, 'arrivals.distance', { m: a.distanceM })}</span>
+            </span>
+            <span
+              class="eta flex shrink-0 items-baseline gap-0.5 whitespace-nowrap"
+              data-eta-sec={a.estimateArriveSec}
+              set:html={etaInner(a.estimateArriveSec)}
+            />
+          </li>
+        ))}
+      </ul>
+    )
+  }
+</section>
+
+<script>
+  import type { BusArrival } from '../types/api';
+  import { API_BASE_URL } from '../lib/config';
+  import { startBoardRefresh } from '../lib/boardrefresh';
+  import { escapeHtml, LIST_CLASS } from '../lib/cards';
+  import { paintAndFetchLineColors } from '../lib/linecolors';
+  import { clientLocale, t } from '../lib/i18n';
+
+  const locale = clientLocale();
+  const board = document.getElementById('arrivals');
+
+  if (board) {
+    const stopId = board.dataset.stopId!;
+    const status = document.getElementById('arrivals-status')!;
+    const mode = document.getElementById('arrivals-mode');
+    const liveIcon = mode?.querySelector<HTMLElement>('[data-mode-live]');
+    const schedIcon = mode?.querySelector<HTMLElement>('[data-mode-sched]');
+    const refreshButton = document.getElementById('arrivals-refresh');
+
+    const REFRESH_MS = 30_000;
+
+    // Piel del pill por estado (mismos tokens que el board CRTM): el punto verde pulsa
+    // SOLO con datos en vivo; el fallo pasa a la piel neutra con reloj
+    const MODE_BASE = 'inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-semibold';
+    const MODE_LIVE = 'bg-ok-soft text-ok-ink';
+    const MODE_SCHED = 'bg-surface-2 text-ink-2';
+
+    function setMode(live: boolean): void {
+      if (!mode || !liveIcon || !schedIcon) return;
+      mode.className = `${MODE_BASE} ${live ? MODE_LIVE : MODE_SCHED}`;
+      liveIcon.hidden = !live;
+      schedIcon.hidden = live;
+    }
+
+    let fetchedAt = Date.now();
+
+    // Cifra + unidad a la derecha; «Llegando» como pastilla de marca; ≤5 min en tinta de marca
+    function etaInner(etaSec: number): string {
+      if (etaSec >= 999999) {
+        return '<span class="text-[13px] font-bold tabular-nums text-ink-2">&gt;45 min</span>';
+      }
+      const remaining = Math.round(etaSec - (Date.now() - fetchedAt) / 1000);
+      if (remaining <= 0) {
+        return `<span class="rounded-full bg-brand px-2 py-0.5 text-xs font-bold text-on-brand">${t(locale, 'arrivals.arriving')}</span>`;
+      }
+      if (remaining < 60) {
+        return `<span class="text-xl font-bold leading-none tracking-tight tabular-nums text-brand-ink">${remaining}</span><span class="text-[11px] font-semibold text-brand-ink">s</span>`;
+      }
+      const min = Math.floor(remaining / 60);
+      const tone = min <= 5 ? 'text-brand-ink' : 'text-ink';
+      const unitTone = min <= 5 ? 'text-brand-ink' : 'text-ink-3';
+      return `<span class="text-xl font-bold leading-none tracking-tight tabular-nums ${tone}">${min}</span><span class="text-[11px] font-semibold ${unitTone}">min</span>`;
+    }
+
+    function tick(): void {
+      board?.querySelectorAll<HTMLElement>('.eta[data-eta-sec]').forEach((el) => {
+        el.innerHTML = etaInner(Number(el.dataset.etaSec));
+      });
+      const secs = Math.round((Date.now() - fetchedAt) / 1000);
+      status.textContent = t(locale, 'status.updatedAgo', { sec: secs });
+    }
+
+    function itemHtml(a: BusArrival): string {
+      const destination = escapeHtml(a.destination);
+      return `
+        <li class="flex items-center gap-3 px-3 py-2.5">
+          <span class="grid h-7 min-w-[34px] shrink-0 place-items-center rounded-md px-1.5 bg-ink text-[13px] font-bold tabular-nums text-surface" data-line="${a.line.replace(/[^A-Za-z0-9/]/g, '')}">${escapeHtml(a.line.split('/')[0])}</span>
+          <span class="min-w-0 flex-1">
+            <span class="block truncate text-[13.5px] font-semibold text-ink">${destination}</span>
+            <span class="block text-[11px] tabular-nums text-ink-3">${t(locale, 'arrivals.distance', { m: a.distanceM })}</span>
+          </span>
+          <span class="eta flex shrink-0 items-baseline gap-0.5 whitespace-nowrap" data-eta-sec="${a.estimateArriveSec}">${etaInner(a.estimateArriveSec)}</span>
+        </li>`;
+    }
+
+    function announce(arrivals: BusArrival[]): void {
+      window.dispatchEvent(new CustomEvent('arrivals:data', { detail: arrivals }));
+    }
+
+    function render(arrivals: BusArrival[]): void {
+      const target = document.getElementById('arrivals-list');
+      if (!target) return;
+      if (arrivals.length === 0) {
+        target.innerHTML = '';
+        status.textContent = t(locale, 'arrivals.noneExpected');
+        return;
+      }
+      target.innerHTML = arrivals.map(itemHtml).join('');
+    }
+
+    async function refresh(signal: AbortSignal): Promise<void> {
+      status.textContent = t(locale, 'status.updating');
+      try {
+        const res = await fetch(`${API_BASE_URL}/stops/arrivals/${encodeURIComponent(stopId)}`, { signal });
+        const body = (await res.json()) as { status: string; data?: { arrivals: BusArrival[] } };
+        if (!res.ok || body.status === 'error' || !body.data) {
+          throw new Error('respuesta de error');
+        }
+        // El placeholder de carga (W3) se retira por ID con el primer dato
+        document.getElementById('arrivals-loading')?.remove();
+        if (!document.getElementById('arrivals-list')) {
+          const emptyOrMissing = board?.querySelector('p[role="alert"], p.text-center');
+          emptyOrMissing?.remove();
+          const ul = document.createElement('ul');
+          ul.id = 'arrivals-list';
+          ul.className = LIST_CLASS;
+          board?.appendChild(ul);
+        }
+        render(body.data.arrivals);
+        announce(body.data.arrivals);
+        fetchedAt = Date.now();
+        setMode(true);
+        tick();
+        if (board) void paintAndFetchLineColors(board);
+      } catch (e) {
+        // Abortada por un refresh más nuevo (boardrefresh): ni es error ni toca el estado
+        if (e instanceof DOMException && e.name === 'AbortError') return;
+        status.textContent = t(locale, 'status.stale');
+        setMode(false);
+      }
+    }
+
+    // Datos iniciales del island (si los hubiera) y fetch inmediato cuando NO hay:
+    // W3 — sin llegadas SSR, el primer fetch del tablón llega al montar la página
+    let hasInitialData = false;
+    const initialData = document.getElementById('arrivals-data')?.textContent;
+    if (initialData) {
+      try {
+        const parsed = JSON.parse(initialData) as BusArrival[];
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          announce(parsed);
+          hasInitialData = true;
+        }
+      } catch {
+        /* datos iniciales inválidos: el primer refresh lo corrige */
+      }
+    }
+
+    startBoardRefresh({ refresh, refreshButton, refreshMs: REFRESH_MS, tick, tickMs: 1000, refreshOnStart: !hasInitialData });
+    void paintAndFetchLineColors(board);
+  }
+</script>

@@ -1,0 +1,147 @@
+---
+import Layout from '../layouts/Layout.astro';
+import IncidentCard from '../components/IncidentCard.astro';
+import { ApiError, getLineIncidents } from '../lib/api';
+import { formatFeedDate, incidentStatus } from '../lib/incidents';
+import { href, t, tN, translator } from '../lib/i18n';
+import type { LineIncidents } from '../types/api';
+
+export const prerender = false;
+
+const locale = Astro.locals.locale ?? 'es';
+const tr = translator(locale);
+
+const lineFilter = Astro.url.searchParams.get('linea')?.trim() ?? '';
+
+let data: LineIncidents | null = null;
+let error: string | null = null;
+let retryAfterSec: number | undefined;
+
+try {
+  data = await getLineIncidents('all');
+} catch (e) {
+  if (e instanceof ApiError) {
+    error = e.message;
+    retryAfterSec = e.retryAfterSec;
+  } else {
+    error = t(locale, 'common.unexpectedError');
+  }
+}
+
+const now = Date.now();
+const all = data?.incidents ?? [];
+const normalizedFilter = lineFilter.toUpperCase();
+const incidents = lineFilter ? all.filter((i) => i.lines.some((l) => l.toUpperCase() === normalizedFilter)) : all;
+const active = incidents.filter((i) => incidentStatus(i, now) === 'active');
+const upcoming = incidents.filter((i) => incidentStatus(i, now) === 'upcoming');
+const feedDate = data ? formatFeedDate(data.lastBuildDate, locale) : null;
+---
+
+<Layout title={tr('incidents.title')} description={tr('incidents.seoDescription')}>
+  {/* Página de prosa + avisos largos: aquí el shell ancho no aporta nada, así que el
+      contenido se capa a la medida de lectura de siempre y queda centrado */}
+  <div class="mx-auto w-full max-w-3xl">
+    <section class="mb-6">
+      <p class="text-xs font-semibold uppercase tracking-[0.14em] text-brand-ink">{tr('incidents.kicker')}</p>
+      <h1 class="mt-2 text-3xl font-bold leading-[1.1] tracking-tight text-pretty sm:text-4xl">{tr('incidents.heading')}</h1>
+      <p class="mt-2.5 max-w-prose text-ink-2 text-pretty">
+        {tr('incidents.intro')}
+      </p>
+      {locale === 'en' && (
+        <p class="mt-2 max-w-prose rounded-lg border border-line bg-surface px-3.5 py-2.5 text-xs leading-relaxed text-ink-2">
+          {tr('incidents.feedEsNote')}
+        </p>
+      )}
+    </section>
+
+    <form method="get" action={href('/incidencias', locale)} class="flex gap-2">
+      <label for="linea" class="sr-only">{tr('incidents.filterLabel')}</label>
+      <input
+        id="linea"
+        type="search"
+        name="linea"
+        value={lineFilter}
+        placeholder={tr('incidents.filterPlaceholder')}
+        autocomplete="off"
+        class="w-full rounded-md border border-control-edge bg-surface px-4 py-3 text-base text-ink shadow-xs outline-none transition placeholder:text-ink-3 hover:border-ink-3 focus:border-brand focus:ring-2 focus:ring-brand/25"
+      />
+      <button
+        type="submit"
+        class="shrink-0 rounded-md bg-brand px-5 py-3 font-semibold text-on-brand shadow-xs transition hover:bg-brand-hover active:bg-brand-active disabled:pointer-events-none disabled:opacity-50 focus-ring"
+      >
+        {tr('incidents.filter')}
+      </button>
+    </form>
+  
+    {
+      error ? (
+        <section class="mt-6" role="alert">
+          <p class="flex items-start gap-3 rounded-lg border border-danger bg-danger-soft px-4 py-3 text-sm font-medium text-danger-ink">
+            <span
+              class="mt-px grid size-5 shrink-0 place-items-center rounded-full bg-danger text-[11px] font-bold text-page"
+              aria-hidden="true"
+            >
+              !
+            </span>
+            <span>
+              {error}
+              {retryAfterSec ? ` ${t(locale, 'incidents.retryIn', { sec: retryAfterSec })}` : ` ${tr('error.tryAgainSoon')}`}
+            </span>
+          </p>
+        </section>
+      ) : incidents.length === 0 ? (
+        <div class="mt-6 rounded-lg border border-line bg-surface px-6 py-8 text-center shadow-xs">
+          <p class="mx-auto grid size-12 place-items-center rounded-full bg-ok-soft text-xl text-ok" aria-hidden="true">✓</p>
+          <p class="mt-3 font-semibold text-ink">
+            {lineFilter ? t(locale, 'incidents.noIncidentsLine', { line: lineFilter.toUpperCase() }) : tr('incidents.noneActive')}
+          </p>
+          <p class="mt-1 text-sm text-ink-3">
+            {lineFilter ? tr('incidents.lineNormal') : tr('incidents.noneActiveBody')}
+          </p>
+          {lineFilter && (
+            <a
+              href={href('/incidencias', locale)}
+              class="mt-5 inline-block rounded-md border border-control-edge bg-surface px-4 py-2.5 font-semibold text-ink shadow-xs transition hover:bg-surface-2 active:bg-surface-2 focus-ring"
+            >
+              {tr('incidents.viewAll')}
+            </a>
+          )}
+        </div>
+      ) : (
+        <>
+          {lineFilter && (
+            <p class="mt-4 text-sm text-ink-2">
+              {tN(locale, incidents.length, 'incidents.count', { n: incidents.length })} {tr('incidents.affecting')}{' '}
+              <strong class="font-semibold text-ink">{lineFilter.toUpperCase()}</strong> ·{' '}
+              <a href={href('/incidencias', locale)} class="font-semibold underline underline-offset-2">
+                {tr('incidents.clearFilter')}
+              </a>
+            </p>
+          )}
+
+          {[
+            { title: tr('incidents.activeGroup'), items: active },
+            { title: tr('incidents.upcomingGroup'), items: upcoming },
+          ]
+            .filter((g) => g.items.length > 0)
+            .map((group) => (
+              <section class="mt-6" aria-label={group.title}>
+                <h2 class="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-3">
+                  {group.title} · {group.items.length}
+                </h2>
+                <ul class="divide-y divide-line overflow-hidden rounded-lg border border-line bg-surface shadow-xs">
+                  {group.items.map((incident) => (
+                    <IncidentCard incident={incident} now={now} />
+                  ))}
+                </ul>
+              </section>
+            ))}
+  
+          {feedDate && (
+            <p class="mt-6 text-center text-xs text-ink-3">{t(locale, 'incidents.feedGenerated', { date: feedDate })}</p>
+          )}
+        </>
+      )
+    }
+  </div>
+</Layout>

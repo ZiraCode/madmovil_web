@@ -1,0 +1,491 @@
+---
+import Layout from '../../layouts/Layout.astro';
+import ErrorState from '../../components/ErrorState.astro';
+import { getLineIncidents, getLineRoute, getLineTimetable, lineColor as lineColorOf, mapApiError, searchLinesByLabel } from '../../lib/api';
+import { ETA_ROW, ETA_ROW_GROUP } from '../../lib/cards';
+import { accessibleChipColors } from '../../lib/contrast';
+import { incidentStatus } from '../../lib/incidents';
+import { jsonForIsland } from '../../lib/islands';
+import { href, t, tN, translator } from '../../lib/i18n';
+import { busRouteJsonLd, jsonLdHtml, pageUrl } from '../../lib/seo';
+import type { DirectionInfo, GeoJSONFeatureCollection, LineIncidents, LineTimetable } from '../../types/api';
+import 'leaflet/dist/leaflet.css';
+
+export const prerender = false;
+
+const locale = Astro.locals.locale ?? 'es';
+const tr = translator(locale);
+const label = Astro.params.label ?? '';
+
+let notFound = false;
+let route = null;
+let lineInfo = null;
+let lineIncidents: LineIncidents | null = null;
+let timetable: LineTimetable | null = null;
+
+if (!/^[A-Za-z0-9]+$/.test(label)) {
+  notFound = true;
+  Astro.response.status = 404;
+} else {
+  const incidentsPromise = getLineIncidents(label).catch(() => null);
+  try {
+    // /lines/route resuelve por lineId o label normalizado: "001" colisiona con el lineId de la
+    // línea "1" → resolver la línea EXACTA por búsqueda y pedir el recorrido por su lineId
+    let exact = null;
+    try {
+      exact = (await searchLinesByLabel(label)).lines.find((l) => l.label === label) ?? null;
+    } catch {
+      /* sin coincidencia exacta: se prueba el label tal cual (puede ser un lineId) */
+    }
+    route = await getLineRoute(exact?.lineId ?? label);
+    if (exact && exact.label !== route.label) exact = null;
+    lineInfo = exact;
+  } catch (e) {
+    const failure = mapApiError(e);
+    if (failure.notFound) {
+      notFound = true;
+      Astro.response.status = 404;
+    } else {
+      Astro.response.status = 502;
+    }
+  }
+  lineIncidents = await incidentsPromise;
+  if (route) timetable = await getLineTimetable(route.lineId).catch(() => null);
+}
+
+// HTML cacheable en edge (la página no tiene estado de usuario server-side); s-maxage 3600
+// (W2, auditoría CPU 2026-11-27): el dato subyacente va a 3600 en el CDN del API; el banner
+// de incidencias (API a 1800) aceptado hasta ~1 h stale — /incidencias sigue siempre fresca.
+// Solo en 200
+if (route) {
+  Astro.response.headers.set('Cache-Control', 'public, max-age=60, s-maxage=3600');
+}
+
+const lineColor = lineColorOf(lineInfo ?? {});
+// Tinta y fondo accesibles (misma regla que el resto de chips de la app): el color crudo
+// de la EMT puede quedar en la banda media donde ni blanco ni tinta pasan 4.5:1
+const lineChip = accessibleChipColors(lineColor);
+
+// Horarios: schedules[tipo] trae [0] dirección 1 (nameA→nameB) y [1] dirección 2
+const DAY_ORDER = ['laboral', 'sabado', 'festivo'] as const;
+const DAY_LABELS: Record<string, string> = {
+  laboral: tr('sched.weekdays'),
+  sabado: tr('sched.saturdays'),
+  festivo: tr('sched.holidays'),
+};
+const dow = new Date().getDay();
+const todayType = dow === 6 ? 'sabado' : dow === 0 ? 'festivo' : 'laboral';
+
+function daySummary(entries: DirectionInfo[]): string {
+  const starts = entries.map((e) => e.StartTime).filter(Boolean).sort();
+  const ends = entries.map((e) => e.StopTime).filter(Boolean).sort();
+  return starts.length > 0 && ends.length > 0 ? `${starts[0]} – ${ends[ends.length - 1]}` : '';
+}
+
+function freq(s: DirectionInfo): string {
+  return s.MinimunFrequency && s.MinimunFrequency === s.MaximumFrequency
+    ? t(locale, 'freq.every', { min: s.MinimunFrequency })
+    : t(locale, 'freq.range', { min: s.MinimunFrequency, max: s.MaximumFrequency });
+}
+
+const dayBlocks = timetable
+  ? DAY_ORDER.filter((d) => (timetable!.schedules[d] ?? []).length > 0).map((d) => {
+      const entries = timetable!.schedules[d] ?? [];
+      return {
+        key: d,
+        label: DAY_LABELS[d] ?? d,
+        today: d === todayType,
+        summary: daySummary(entries),
+        dirs: ([0, 1] as const)
+          .map((i) => ({
+            title: route ? (i === 0 ? `${route.nameA} → ${route.nameB}` : `${route.nameB} → ${route.nameA}`) : '',
+            entries: entries[i] ? [entries[i]] : [],
+          }))
+          .filter((dir) => dir.entries.length > 0),
+      };
+    })
+  : [];
+
+// Diagrama de paradas: el orden del array ES el orden del recorrido; primero y último son cabeceras
+interface DiagramStop {
+  stopNum: string;
+  stopName: string;
+}
+
+function stopList(fc: GeoJSONFeatureCollection): DiagramStop[] {
+  return fc.features.map((f) => {
+    const p = f.properties as { stopNum?: number | string; stopName?: string };
+    return { stopNum: String(p.stopNum ?? ''), stopName: String(p.stopName ?? '') };
+  });
+}
+
+// El sentido tiene color propio (--dir-a / --dir-b) y es el MISMO en cabecera, selector,
+// mapa y diagrama. El color de la línea EMT se queda solo en el chip identificativo.
+const diagram = route
+  ? [
+      { key: 'toA', title: t(locale, 'dir.towards', { name: route.nameA }), tone: 'var(--dir-a)', stops: stopList(route.stops.toA) },
+      { key: 'toB', title: t(locale, 'dir.towards', { name: route.nameB }), tone: 'var(--dir-b)', stops: stopList(route.stops.toB) },
+    ].filter((d) => d.stops.length > 0)
+  : [];
+
+// SEO: la ficha_indexable lleva cabeceras aunque la búsqueda exacta no resuelva
+const seoLine = lineInfo ?? (route ? { label: route.label, nameA: route.nameA, nameB: route.nameB } : null);
+const lineJsonLd = seoLine
+  ? jsonLdHtml(
+      busRouteJsonLd({
+        name: `${tr('line.title', { label: seoLine.label })}: ${seoLine.nameA} - ${seoLine.nameB}`,
+        url: pageUrl(`/linea/${encodeURIComponent(seoLine.label)}`, locale),
+        provider: 'EMT Madrid',
+      })
+    )
+  : null;
+---
+
+<Layout
+  title={seoLine ? t(locale, 'line.seoTitle', { label: seoLine.label, nameA: seoLine.nameA, nameB: seoLine.nameB }) : t(locale, 'error.lineNotFoundTitle')}
+  description={seoLine ? t(locale, 'line.seoDescription', { label: seoLine.label, nameA: seoLine.nameA, nameB: seoLine.nameB }) : undefined}
+>
+  {lineJsonLd && <script type="application/ld+json" set:html={lineJsonLd} />}
+  {
+    notFound ? (
+      <ErrorState
+        tone="neutral"
+        title={t(locale, 'error.lineNotFoundTitle')}
+        body={t(locale, 'error.lineNotFoundBody', { label })}
+        action={{ path: '/', label: t(locale, 'error.backHome') }}
+      />
+    ) : !route ? (
+      <ErrorState tone="danger" title={t(locale, 'error.loadLineTitle')} body={t(locale, 'error.tryAgainSoon')} />
+    ) : (
+      <div
+        class="line-page"
+        data-dir="both"
+        style={`--dir-a:${lineColor};--dir-b:color-mix(in oklab, ${lineColor} 58%, var(--color-ink))`}
+      >
+        <section class="flex items-start gap-3">
+          <span
+            class="grid h-12 min-w-12 shrink-0 place-items-center rounded-lg px-2 text-lg font-bold tabular-nums"
+            style={`background:${lineChip.background};color:${lineChip.text};box-shadow:inset 0 0 0 1px ${lineChip.text}26`}
+          >
+            {route.label}
+          </span>
+          <h1 class="min-w-0 flex-1 text-[17px] font-bold leading-[1.35] tracking-tight text-ink" style="text-wrap:pretty">
+            <span class="sr-only">{t(locale, 'line.srLabel', { label: route.label })} </span>
+            {route.nameA}
+            <span class="font-medium text-ink-3"> ⇄ </span>
+            {route.nameB}
+          </h1>
+        </section>
+
+        {lineIncidents && lineIncidents.count > 0 && (
+          <section class="mt-4 rounded-lg border border-warn bg-warn-soft px-4 py-3.5 shadow-xs" role="status" aria-label={t(locale, 'line.incidentsAria')}>
+            <div class="flex items-start gap-3">
+              <span class="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full bg-warn text-[11px] font-bold text-page" aria-hidden="true">
+                !
+              </span>
+              <div class="min-w-0 text-sm font-medium text-warn-ink">
+                <p class="font-semibold">{tN(locale, lineIncidents.count, 'line.incidentsAffect')}</p>
+                <ul class="mt-1.5 space-y-1">
+                  {lineIncidents.incidents.slice(0, 2).map((incident) => (
+                    <li class="text-warn-ink/90">
+                      {incidentStatus(incident) === 'upcoming' ? `${t(locale, 'incident.upcoming')} · ` : ''}
+                      {incident.title}
+                    </li>
+                  ))}
+                </ul>
+                {locale === 'en' && <p class="mt-1.5 text-xs text-warn-ink/75">{t(locale, 'incidents.feedEsNote')}</p>}
+                {lineIncidents.count > 2 && <p class="mt-1 text-warn-ink/90">{t(locale, 'line.andMore', { n: lineIncidents.count - 2 })}</p>}
+                <a
+                  href={href(`/incidencias?linea=${encodeURIComponent(route.label)}`, locale)}
+                  class="mt-2 inline-block font-semibold underline underline-offset-2 focus-ring"
+                >
+                  {t(locale, 'line.viewDetails')}
+                </a>
+              </div>
+            </div>
+          </section>
+        )}
+
+        {dayBlocks.length > 0 && (
+          <section class="mt-4 overflow-hidden rounded-lg border border-line bg-surface shadow-xs" aria-label={t(locale, 'line.timetableAria')}>
+            <h2 class="border-b border-line px-4 py-3 text-xs font-semibold uppercase tracking-wide text-ink-3">{t(locale, 'line.timetable')}</h2>
+            <div class="divide-y divide-line">
+              {dayBlocks.map((day) => (
+                <details class="group" open={day.today}>
+                  <summary class="flex cursor-pointer list-none items-center justify-between gap-x-3 gap-y-1 px-4 py-3 transition hover:bg-surface-2 focus-ring">
+                    <span class="flex flex-wrap items-baseline gap-x-2">
+                      <span class="text-sm font-semibold text-ink">{day.label}</span>
+                      {day.today && (
+                        <span class="rounded bg-brand-soft px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-brand-ink">{t(locale, 'time.today')}</span>
+                      )}
+                    </span>
+                    <span class="flex shrink-0 items-center gap-2">
+                      <span class="text-xs font-medium tabular-nums text-ink-3">{day.summary}</span>
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        stroke-width="1.5"
+                        stroke="currentColor"
+                        class="size-4 text-ink-3 transition group-open:rotate-180"
+                        aria-hidden="true"
+                      >
+                        <path stroke-linecap="round" stroke-linejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
+                      </svg>
+                    </span>
+                  </summary>
+                  <div class="grid gap-3 px-4 pb-4 pt-1 sm:grid-cols-2">
+                    {day.dirs.map((dir) => (
+                      <div class="rounded-md bg-surface-2/60 px-3.5 py-3">
+                        <p class="text-xs font-semibold text-ink-2">{dir.title}</p>
+                        <ul class="mt-1.5 space-y-1">
+                          {dir.entries.map((s) => (
+                            <li class={ETA_ROW}>
+                              <span class={`${ETA_ROW_GROUP} text-sm tabular-nums text-ink`}>
+                                {s.StartTime} – {s.StopTime}
+                              </span>
+                              <span class="ml-auto shrink-0 text-xs font-semibold tabular-nums text-ink-2">{freq(s)}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {route && !timetable && (
+          <p class="mt-4 rounded-lg border border-line bg-surface px-4 py-3 text-sm text-ink-3 shadow-xs">
+            {t(locale, 'line.timetableUnavailable')}
+          </p>
+        )}
+
+        <section class="mt-6" aria-label={t(locale, 'line.routeAria')}>
+          <h2 class="text-lg font-bold tracking-tight">{t(locale, 'line.route')}</h2>
+          <p id="line-map-status" class="mt-0.5 text-xs font-medium text-ink-3" role="status">
+            <span class="sr-only">{t(locale, 'line.loadingRoute')}</span>
+            <span class="inline-block h-3 w-44 max-w-full animate-pulse rounded bg-surface-2" aria-hidden="true" />
+          </p>
+
+          <div
+            id="line-directions"
+            role="group"
+            aria-label={t(locale, 'line.directionAria')}
+            class="dir-tabs mt-3"
+            data-name-a={route.nameA}
+            data-name-b={route.nameB}
+          >
+            <button type="button" class="dir-btn" data-direction="both" aria-pressed="true">{t(locale, 'line.bothDirections')}</button>
+            <button type="button" class="dir-btn" data-direction="toA" aria-pressed="false">
+              <span class="size-2 shrink-0 rounded-full" style="background:var(--dir-a)" aria-hidden="true" />
+              {route.nameA}
+            </button>
+            <button type="button" class="dir-btn" data-direction="toB" aria-pressed="false">
+              <span class="size-2 shrink-0 rounded-full" style="background:var(--dir-b)" aria-hidden="true" />
+              {route.nameB}
+            </button>
+          </div>
+
+          <div
+            id="line-map"
+            class="mt-3 h-[calc(100dvh-20rem)] min-h-96 overflow-hidden rounded-lg border border-line bg-surface-2 shadow-xs"
+            aria-label={t(locale, 'line.mapAria')}
+          >
+          </div>
+        </section>
+
+        {diagram.length > 0 && (
+          <section class="mt-8" aria-label={t(locale, 'line.stopsAria')}>
+            <h2 class="text-lg font-bold tracking-tight">{t(locale, 'line.stops')}</h2>
+            <div class="mt-3 grid gap-4 lg:grid-cols-2">
+              {diagram.map((dir) => (
+                <div class="overflow-hidden rounded-xl border border-line bg-surface shadow-xs" data-diagram={dir.key}>
+                  <div
+                    class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b border-line px-4 py-3"
+                    style={`background:color-mix(in oklab, ${dir.tone} 8%, var(--color-surface))`}
+                  >
+                    <h3 class="flex min-w-0 items-center gap-2 text-sm font-semibold text-ink">
+                      <span class="size-2 shrink-0 rounded-full" style={`background:${dir.tone}`} aria-hidden="true" />
+                      <span class="truncate">{dir.title}</span>
+                    </h3>
+                    <span class="shrink-0 text-xs font-medium tabular-nums text-ink-3">{tN(locale, dir.stops.length, 'stop.count')}</span>
+                  </div>
+                  <ol class="px-3 py-2">
+                    {dir.stops.map((s, i) => {
+                      const isFirst = i === 0;
+                      const isLast = i === dir.stops.length - 1;
+                      const isEnd = isFirst || isLast;
+                      return (
+                        <li>
+                          <a
+                            href={href(`/parada/${s.stopNum}`, locale)}
+                            class="group relative flex items-center gap-3 rounded-md py-1.5 pr-2 transition hover:bg-surface-2 focus-ring"
+                          >
+                            {!isFirst && (
+                              <span
+                                class="pointer-events-none absolute left-[13px] top-0 h-1/2 w-[3px] -translate-x-1/2"
+                                style={`background:color-mix(in oklab, ${dir.tone} 45%, var(--color-line))`}
+                                aria-hidden="true"
+                              />
+                            )}
+                            {!isLast && (
+                              <span
+                                class="pointer-events-none absolute bottom-0 left-[13px] top-1/2 w-[3px] -translate-x-1/2"
+                                style={`background:color-mix(in oklab, ${dir.tone} 45%, var(--color-line))`}
+                                aria-hidden="true"
+                              />
+                            )}
+                            <span class="relative grid size-[26px] shrink-0 place-items-center" aria-hidden="true">
+                              <span
+                                class:list={['rounded-full transition-all', isEnd ? 'size-[15px]' : 'size-2.5 group-hover:size-3']}
+                                style={
+                                  isEnd
+                                    ? `background:${dir.tone};box-shadow:0 0 0 3px var(--color-surface)`
+                                    : `background:var(--color-surface);box-shadow:inset 0 0 0 3px ${dir.tone}, 0 0 0 3px var(--color-surface)`
+                                }
+                              />
+                            </span>
+                            <span class="min-w-0 flex-1 py-0.5">
+                              <span
+                                class:list={[
+                                  'block truncate transition',
+                                  isEnd ? 'text-[15px] font-bold text-ink' : 'text-sm font-medium text-ink-2 group-hover:text-ink',
+                                ]}
+                              >
+                                {s.stopName}
+                              </span>
+                            </span>
+                            <span class="shrink-0 rounded bg-surface-2 px-1.5 py-0.5 text-[11px] font-semibold tabular-nums text-ink-3 transition group-hover:bg-brand-soft group-hover:text-brand-ink">
+                              {s.stopNum}
+                            </span>
+                          </a>
+                        </li>
+                      );
+                    })}
+                  </ol>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
+        <script is:inline type="application/json" id="line-route-data" set:html={jsonForIsland(route)} />
+      </div>
+    )
+  }
+</Layout>
+
+<style>
+  /* El sentido se pinta con el color de la línea: ida el color tal cual, vuelta el mismo color
+     entintado. Se declaran como --dir-a/--dir-b en el wrapper (inline, desde lineColor) y valen
+     para pestañas, diagrama y mapa. Al entintar con --color-ink se adaptan solos al tema oscuro.
+     Las pestañas (.dir-tabs/.dir-btn) viven en global.css, compartidas con /linea/crtm. */
+
+  /* El selector gobierna mapa Y diagrama: un solo control para todo el recorrido. */
+  .line-page[data-dir='toA'] [data-diagram='toB'],
+  .line-page[data-dir='toB'] [data-diagram='toA'] {
+    display: none;
+  }
+</style>
+
+<script>
+  import L from 'leaflet';
+  import { escapeHtml, stopRefLabel, viewStopLinkHtml } from '../../lib/cards';
+  import { clientLocale, t } from '../../lib/i18n';
+  import type { LineRoute } from '../../types/api';
+
+  const locale = clientLocale();
+  const pageEl = document.querySelector<HTMLElement>('.line-page');
+  const mapEl = document.getElementById('line-map');
+  const dataEl = document.getElementById('line-route-data');
+  const statusEl = document.getElementById('line-map-status');
+  const directionsEl = document.getElementById('line-directions');
+
+  if (pageEl && mapEl && dataEl && statusEl && directionsEl) {
+    const route = JSON.parse(dataEl.textContent!) as LineRoute;
+    const dirButtons = Array.from(directionsEl.querySelectorAll<HTMLButtonElement>('.dir-btn'));
+
+    // Los dos sentidos comparten el color de la línea; --dir-b es la versión entintada.
+    // Se leen de los puntos de las pestañas ya pintados: getPropertyValue devolvería el
+    // color-mix() sin resolver y Leaflet lo escribe como atributo SVG, que no lo admite.
+    const dirColor = (dir: 'toA' | 'toB', fallback: string): string => {
+      const dot = directionsEl.querySelector(`[data-direction="${dir}"] span`);
+      return dot ? getComputedStyle(dot).backgroundColor : fallback;
+    };
+    const colorA = dirColor('toA', '#0072ce');
+    const colorB = dirColor('toB', '#004a86');
+
+    const map = L.map(mapEl);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    }).addTo(map);
+
+    const layers: Record<'toA' | 'toB', L.FeatureGroup> = {
+      toA: L.featureGroup(),
+      toB: L.featureGroup(),
+    };
+
+    for (const dir of ['toA', 'toB'] as const) {
+      const color = dir === 'toA' ? colorA : colorB;
+      L.geoJSON(route.itinerary[dir] as never, {
+        style: { color, weight: 5, opacity: 0.85 },
+      }).addTo(layers[dir]);
+
+      L.geoJSON(route.stops[dir] as never, {
+        pointToLayer: (_feature, latlng) =>
+          L.circleMarker(latlng, {
+            radius: 6,
+            color: '#ffffff',
+            weight: 2,
+            fillColor: color,
+            fillOpacity: 1,
+          }),
+        onEachFeature: (feature, layer) => {
+          const p = feature.properties as { stopNum?: number; stopName?: string };
+          layer.bindPopup(
+            `<strong>${escapeHtml(String(p.stopName ?? ''))}</strong><br/>` +
+              `<span class="text-xs text-ink-3">${escapeHtml(stopRefLabel(locale, String(p.stopNum ?? '')))}</span><br/>` +
+              viewStopLinkHtml(locale, 'emt', String(p.stopNum ?? ''))
+          );
+        },
+      }).addTo(layers[dir]);
+    }
+
+    function show(direction: 'both' | 'toA' | 'toB'): void {
+      for (const dir of ['toA', 'toB'] as const) {
+        if (direction === 'both' || direction === dir) {
+          map.addLayer(layers[dir]);
+        } else {
+          map.removeLayer(layers[dir]);
+        }
+      }
+
+      const target = direction === 'both' ? L.featureGroup([layers.toA, layers.toB]) : layers[direction];
+      const bounds = target.getBounds();
+      if (bounds.isValid()) {
+        map.fitBounds(bounds, { padding: [24, 24] });
+      }
+
+      pageEl!.dataset.dir = direction;
+      dirButtons.forEach((btn) => {
+        btn.setAttribute('aria-pressed', String(btn.dataset.direction === direction));
+      });
+    }
+
+    dirButtons.forEach((btn) => {
+      btn.addEventListener('click', () => show((btn.dataset.direction ?? 'both') as 'both' | 'toA' | 'toB'));
+    });
+
+    show('both');
+    statusEl.textContent = t(locale, 'line.routeStatus', {
+      a: route.itinerary.toA.features.length,
+      nameA: route.nameA,
+      b: route.itinerary.toB.features.length,
+      nameB: route.nameB,
+    });
+  }
+</script>

@@ -1,0 +1,64 @@
+---
+import Legal from '../layouts/Legal.astro';
+
+export const prerender = true;
+---
+
+<Legal title="Política de cookies" updated="agosto de 2026">
+  <p>
+    Esta web no muestra banners de cookies porque no hay nada que aceptar: <strong>no usamos cookies ni tecnologías
+    equivalentes de analítica, publicidad, medición de audiencias o rastreo</strong>. El único almacenamiento que
+    empleamos es estrictamente necesario para que la web funcione, y por tanto está exento de consentimiento conforme
+    al artículo 22.2 de la Ley 34/2002 (LSSI-CE) y a los criterios de la AEPD y del GTICO.
+  </p>
+
+  <h2>1. Qué almacenamiento utiliza este sitio</h2>
+  <ul>
+    <li>
+      <strong>Preferencia de tema</strong> — <code>localStorage: madmovil:theme</code>. Guarda si prefieres el tema
+      claro u oscuro. Solo lo lee tu navegador.
+    </li>
+    <li>
+      <strong>Preferencia de idioma</strong> — <code>localStorage: madmovil:locale</code>. Recuerda el idioma elegido en
+      el selector (el idioma de cada página lo determina su URL, no este dato).
+    </li>
+    <li>
+      <strong>Favoritos</strong> — <code>localStorage: madmovil:favorites</code>. Tus paradas favoritas se guardan solo
+      en tu dispositivo.
+    </li>
+    <li>
+      <strong>Sincronización de favoritos (opcional)</strong> — <code>localStorage/sessionStorage: madmovil:vault</code> y <code>madmovil:vault-status</code>. Si activas la
+      sincronización, el código de sincronización se guarda solo si
+      marcas «recordar en este dispositivo»; si no, vive en almacenamiento de sesión y se borra al cerrar el navegador.
+    </li>
+    <li>
+      <strong>Cachés de consulta</strong> — <code>localStorage: madmovil:stopnames</code>, <code>madmovil:stopaddresses</code>, <code>madmovil:stoplines</code> y
+      equivalentes (<code>crtm*</code>, <code>linecolors</code>). Copias locales de datos
+      públicos (nombres, direcciones y líneas de paradas, colores de líneas) para no repetir peticiones. No contienen
+      datos personales.
+    </li>
+  </ul>
+  <p>
+    Todo lo anterior se instala únicamente cuando lo necesitas como usuario (tema, idioma, favoritos o sincronización)
+    y no sirve para rastrearte ni identificarte entre sitios.
+  </p>
+
+  <h2>2. Cómo eliminar estos datos</h2>
+  <ul>
+    <li>
+      Desde tu navegador: «Borrar datos de navegación» → cookies y otros datos de sitios. También puedes borrar los datos
+      de <code>madmovil.es</code> individualmente en la configuración de sitios.
+    </li>
+    <li>
+      Los favoritos se quitan desde la propia web (estrella de cada parada o la
+      página de <a href="/favoritos">Favoritos</a>), y la copia remota de sincronización con el botón «Borrar copia remota».
+    </li>
+  </ul>
+
+  <h2>3. Futuros cambios</h2>
+  <p>
+    Si en el futuro incorporásemos cualquier cookie o almacenamiento no estrictamente necesario (por ejemplo,
+    estadísticas agregadas), pediremos tu consentimiento previo mediante un banner con opciones claras y actualizaremos
+    esta política.
+  </p>
+</Legal>

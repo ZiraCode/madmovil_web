@@ -1,0 +1,322 @@
+---
+import Layout from '../layouts/Layout.astro';
+import SyncPanel from '../components/SyncPanel.astro';
+import { starSvgHtml } from '../lib/cards';
+import { href, translator } from '../lib/i18n';
+
+export const prerender = false;
+
+const locale = Astro.locals.locale ?? 'es';
+const tr = translator(locale);
+---
+
+<Layout title={tr('favorites.title')}>
+  <section>
+    <h1 class="text-2xl font-bold tracking-tight">{tr('favorites.heading')}</h1>
+
+    <p
+      id="fav-status"
+      class="mt-5 block divide-y divide-line overflow-hidden rounded-lg border border-line bg-surface text-sm text-ink-2 shadow-xs"
+      role="status"
+    >
+      <span class="sr-only">{tr('favorites.loading')}</span>
+      <span class="flex items-center gap-3 px-4 py-3.5" aria-hidden="true">
+        <span class="block h-4 w-44 animate-pulse rounded bg-surface-2"></span>
+      </span>
+      <span class="flex items-center gap-3 px-4 py-3.5" aria-hidden="true">
+        <span class="block h-4 w-32 animate-pulse rounded bg-surface-2"></span>
+      </span>
+      <span class="flex items-center gap-3 px-4 py-3.5" aria-hidden="true">
+        <span class="block h-4 w-52 animate-pulse rounded bg-surface-2"></span>
+      </span>
+    </p>
+    {/* Móvil: lista con separadores dentro de una caja. Escritorio (≥lg): la caja se disuelve
+        (divide/border/bg/shadow a cero) y cada <li> se vuelve tarjeta suelta en dos columnas —
+        el <li> pone su propio borde en render(), abajo en el script */}
+    <ul
+      id="fav-list"
+      class="mt-5 divide-y divide-line overflow-hidden rounded-lg border border-line bg-surface shadow-xs empty:hidden lg:grid lg:grid-cols-2 lg:gap-4 lg:divide-y-0 lg:overflow-visible lg:rounded-none lg:border-0 lg:bg-transparent lg:shadow-none"
+    >
+    </ul>
+    <p id="fav-chips-feedback" class="sr-only" role="status"></p>
+    <div id="fav-empty" class="hidden rounded-lg border border-line bg-surface px-6 py-10 text-center shadow-xs">
+      <p
+        class="mx-auto grid size-12 place-items-center rounded-full bg-warn-soft text-warn"
+        aria-hidden="true"
+        set:html={starSvgHtml(false, 'size-6', 1.5)}
+      />
+      <p class="mt-4 font-semibold text-ink">{tr('favorites.emptyTitle')}</p>
+      <p class="mx-auto mt-1 max-w-xs text-sm text-ink-3 text-pretty">
+        {tr('favorites.emptyBody')}
+      </p>
+      <a
+        href={href('/', locale)}
+        class="mt-6 inline-block rounded-md bg-brand px-5 py-3 font-semibold text-on-brand shadow-xs transition hover:bg-brand-hover active:bg-brand-active focus-ring"
+        >{tr('common.searchStops')}</a
+      >
+    </div>
+  </section>
+
+  {/* Copia de seguridad (F1): los favoritos viven solo en este navegador; export/import
+      por archivo, QR (si cabe) y enlace con fragment #import= (nunca viaja al server).
+      La lógica vive en lib/favbackup + lib/qrscan. Herramienta de una vez: colapsada en
+      <details> para que no pese sobre la lista; favbackup la ABRE al mostrar feedback
+      (los mensajes #import= incluido) y los diálogos viven fuera, en SyncPanel */}
+  <details
+    id="backup-section"
+    class="group mt-10 rounded-lg border border-line bg-surface shadow-xs lg:max-w-2xl"
+    aria-labelledby="backup-title"
+  >
+    <summary class="flex cursor-pointer list-none items-center gap-2 px-4 py-4 focus-ring">
+      <h2 id="backup-title" class="flex-1 text-sm font-bold text-ink">{tr('backup.title')}</h2>
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        fill="none"
+        viewBox="0 0 24 24"
+        stroke-width="1.5"
+        stroke="currentColor"
+        class="size-4 shrink-0 text-ink-3 transition group-open:rotate-180"
+        aria-hidden="true"
+      >
+        <path stroke-linecap="round" stroke-linejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
+      </svg>
+    </summary>
+    <div class="px-4 pb-4">
+      <p class="text-xs text-pretty text-ink-3">
+        {tr('backup.body')}
+      </p>
+      <div class="mt-3 flex flex-wrap gap-2">
+        <button
+          type="button"
+          id="backup-export"
+          class="rounded-md border border-control-edge bg-surface px-3 py-2 text-xs font-semibold text-ink-2 transition hover:bg-surface-2 active:bg-surface-2 focus-ring"
+          >{tr('backup.exportFile')}</button
+        >
+        <button
+          type="button"
+          id="backup-qr"
+          class="rounded-md border border-control-edge bg-surface px-3 py-2 text-xs font-semibold text-ink-2 transition hover:bg-surface-2 active:bg-surface-2 focus-ring"
+          >{tr('backup.qr')}</button
+        >
+        <button
+          type="button"
+          id="backup-link"
+          class="rounded-md border border-control-edge bg-surface px-3 py-2 text-xs font-semibold text-ink-2 transition hover:bg-surface-2 active:bg-surface-2 focus-ring"
+          >{tr('backup.copyLink')}</button
+        >
+        <button
+          type="button"
+          id="backup-import"
+          class="rounded-md border border-control-edge bg-surface px-3 py-2 text-xs font-semibold text-ink-2 transition hover:bg-surface-2 active:bg-surface-2 focus-ring"
+          >{tr('backup.importFile')}</button
+        >
+        <button
+          type="button"
+          id="backup-scan"
+          class="rounded-md border border-control-edge bg-surface px-3 py-2 text-xs font-semibold text-ink-2 transition hover:bg-surface-2 active:bg-surface-2 focus-ring"
+          >{tr('backup.scanQr')}</button
+        >
+      </div>
+      <input id="backup-file" type="file" accept=".json,application/json" class="hidden" tabindex="-1" aria-hidden="true" />
+      <p id="backup-feedback" class="mt-2 hidden text-xs font-medium" role="status"></p>
+    </div>
+  </details>
+
+  {/* Sincronización (F2) y los 3 diálogos (QR, escaneo y código de sync): SyncPanel */}
+  <SyncPanel />
+</Layout>
+
+<script>
+  import { crtmStopCode, getFavorites, isCrtmStopId, removeFavorite, stopUrl, updateFavorite } from '../lib/favorites';
+  import { cachedAddress, cachedLines, cachedMunicipality, cachedName, resolveDetails } from '../lib/stopdetailcache';
+  import { chipFallbackColors, displayStopName } from '../lib/crtm';
+  import { crtmLineColor, crtmLineColorInStop, ensureCrtmLineColors, paintAndFetchCrtmLineColors } from '../lib/crtmlinecolors';
+  import { paintAndFetchLineColors } from '../lib/linecolors';
+  import { escapeHtml, starSvgHtml, stopHeaderHtml } from '../lib/cards';
+  import { consumeImportHash, initFavoriteBackup, type FavBackupDeps } from '../lib/favbackup';
+  import { clientLocale, t } from '../lib/i18n';
+
+  const locale = clientLocale();
+  const status = document.getElementById('fav-status')!;
+  const list = document.getElementById('fav-list')!;
+  const empty = document.getElementById('fav-empty')!;
+  const chipsFeedback = document.getElementById('fav-chips-feedback')!;
+
+  let favs: FavItem[] = [];
+  let busy = false;
+
+  interface FavItem {
+    stopId: string;
+    name: string;
+    alias: string | null;
+    lines: string[];
+  }
+
+  function displayId(item: FavItem): string {
+    return isCrtmStopId(item.stopId) ? crtmStopCode(item.stopId) : item.stopId;
+  }
+
+  // El alias lo escribe el usuario y se respeta tal cual; el nombre del API sí se normaliza
+  // (los CRTM llegan en mayúsculas y convivían con los EMT en caja mixta)
+  function displayName(item: FavItem): string {
+    return item.alias ?? displayStopName(cachedName(item.stopId) ?? item.name);
+  }
+
+  // Estrella si el chip coincide con una línea favorita (tolera el sufijo de sentido "150/1" vs "150")
+  function isStarred(item: FavItem, chipLabel: string): boolean {
+    return item.lines.some((f) => chipLabel === f || chipLabel.startsWith(`${f}/`));
+  }
+
+  // Con el detalle resuelto: chips de TODAS las líneas de la parada con estrella ☆/★
+  // (así una línea quitada por error se puede re-fijar al momento). Sin detalle (EMT caída):
+  // chips planos solo de las líneas favoritas. Los chips CRTM van en tinta neutra y SIN
+  // data-line: linecolors.ts colisionaría con labels EMT idénticos; las ML y las de
+  // cercanías llevan su color oficial (labels únicos en toda la red CRTM) y los labels
+  // ambiguos ('1' = M1 y urbana) se desambiguan con el municipio de la parada.
+  function chipsHtml(item: FavItem): string {
+    const all = cachedLines(item.stopId);
+    const crtm = isCrtmStopId(item.stopId);
+    const stopCtx = crtm ? { stopCode: crtmStopCode(item.stopId), municipality: cachedMunicipality(item.stopId) } : undefined;
+    const knownColor = (label: string): { color: string; textColor: string } | null =>
+      crtmLineColor(label) ?? chipFallbackColors(label) ?? (stopCtx ? crtmLineColorInStop(label, stopCtx) : null);
+    const base = 'mt-2.5 flex flex-wrap gap-1';
+    const chipBase = 'chip-btn inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-bold transition focus-ring';
+    const plainBase = 'rounded px-1.5 py-0.5 text-[11px] font-bold';
+    const crtmChipCls = (known: { color: string; textColor: string } | null): string =>
+      known ? chipBase : `${chipBase} bg-ink text-surface`;
+    const crtmChipStyle = (known: { color: string; textColor: string } | null): string =>
+      known ? ` style="background:${known.color};color:${known.textColor}"` : '';
+    if (all.length > 0) {
+      return `<div class="${base}">
+        ${all
+          .map((label) => {
+            const active = isStarred(item, label);
+            const title = active ? t(locale, 'favLine.unpin', { label }) : t(locale, 'favLine.pin', { label });
+            const star = starSvgHtml(active);
+            const known = knownColor(label);
+            const chip = crtm
+              ? `<button type="button" aria-pressed="${active}" title="${escapeHtml(title)}" data-label="${escapeHtml(label)}" data-stop-id="${escapeHtml(item.stopId)}" class="${crtmChipCls(known)}"${crtmChipStyle(known)}${known ? '' : ` data-crtm-line="${escapeHtml(label)}"`}><span>${escapeHtml(label)}</span>${star}</button>`
+              : `<button type="button" aria-pressed="${active}" title="${escapeHtml(title)}" data-line="${escapeHtml(label)}" data-label="${escapeHtml(label)}" data-stop-id="${escapeHtml(item.stopId)}" class="${chipBase} border border-control-edge bg-surface-2 text-ink-2"><span>${escapeHtml(label)}</span>${star}</button>`;
+            return chip;
+          })
+          .join('')}
+      </div>`;
+    }
+    if (item.lines.length > 0) {
+      return `<div class="${base}">
+        ${item.lines
+          .map((l) => {
+            if (crtm) {
+              const known = knownColor(l);
+              return `<span class="${known ? plainBase : `${plainBase} bg-ink text-surface`}"${known ? ` style="background:${known.color};color:${known.textColor}"` : ` data-crtm-line="${escapeHtml(l)}"`}>${escapeHtml(l)}</span>`;
+            }
+            return `<span class="${plainBase} border border-line bg-surface-2 text-ink-2" data-line="${escapeHtml(l)}">${escapeHtml(l)}</span>`;
+          })
+          .join('')}
+      </div>`;
+    }
+    return '';
+  }
+
+  function render(): void {
+    list.innerHTML = '';
+    if (favs.length === 0) {
+      empty.classList.remove('hidden');
+      status.classList.add('hidden');
+      list.classList.add('hidden');
+    } else {
+      empty.classList.add('hidden');
+      status.classList.add('hidden');
+      list.classList.remove('hidden');
+      for (const item of favs) {
+        const crtm = isCrtmStopId(item.stopId);
+        // Estación de Cercanías (r_*): ref "Estación 18000" + tag propio
+        const code = crtm ? crtmStopCode(item.stopId) : '';
+        const isStation = code.startsWith('r_');
+        const address = cachedAddress(item.stopId);
+        const li = document.createElement('li');
+        // En ≥lg el <ul> deja de ser caja: cada item se dibuja su propia tarjeta (ver clases del <ul>)
+        li.className = 'px-4 py-3.5 lg:rounded-lg lg:border lg:border-line lg:bg-surface lg:shadow-xs';
+        li.innerHTML = `
+          <a href="${stopUrl(item.stopId)}" class="block rounded-md transition hover:text-brand-ink focus-ring">
+            ${stopHeaderHtml({ name: displayName(item), stopId: isStation ? code.slice(2) : displayId(item), address: address ?? null, tag: crtm ? (isStation ? t(locale, 'crtm.network.cercanias') : 'CRTM') : undefined, locale, station: isStation })}
+          </a>
+          ${chipsHtml(item)}
+          <div class="mt-3 flex justify-center">
+            <button type="button" class="remove-btn w-full justify-center rounded-md border border-control-edge bg-surface px-3 py-2 text-xs font-semibold text-ink-2 transition hover:border-danger hover:bg-danger-soft hover:text-danger-ink active:bg-danger-soft focus-ring sm:w-auto" data-stop-id="${escapeHtml(item.stopId)}">
+              ${t(locale, 'favorites.remove')}
+            </button>
+          </div>`;
+        li.querySelector('.remove-btn')?.addEventListener('click', async () => {
+          try {
+            await removeFavorite(item.stopId);
+            void load();
+          } catch (e) {
+            status.textContent = e instanceof Error ? e.message : t(locale, 'favorites.removeError');
+            status.classList.remove('hidden');
+          }
+        });
+        list.appendChild(li);
+      }
+      void paintAndFetchLineColors(list);
+  void paintAndFetchCrtmLineColors(list);
+    }
+  }
+
+  async function load(): Promise<void> {
+    try {
+      favs = await getFavorites();
+      render();
+      if (favs.length > 0) {
+        await resolveDetails(favs.map((f) => f.stopId));
+        // Con las entradas de /crtm/lines garantizadas, el segundo render ya resuelve
+        // los labels ambiguos por municipio (caché fría: el fetch arrancó en el primer render)
+        await ensureCrtmLineColors();
+        render();
+      }
+    } catch {
+      status.textContent = t(locale, 'favorites.loadError');
+    }
+  }
+
+  list.addEventListener('click', async (ev) => {
+    const btn = (ev.target as HTMLElement).closest<HTMLButtonElement>('button.chip-btn');
+    if (!btn || busy) return;
+    const stopId = btn.dataset.stopId ?? '';
+    const label = btn.dataset.label ?? '';
+    const item = favs.find((f) => f.stopId === stopId);
+    if (!item) return;
+    const next = isStarred(item, label) ? item.lines.filter((f) => f !== label && !label.startsWith(`${f}/`)) : [...item.lines, label];
+    busy = true;
+    try {
+      await updateFavorite(stopId, { lines: next });
+      item.lines = next;
+      render();
+      if (chipsFeedback) chipsFeedback.textContent = next.includes(label) ? t(locale, 'favLine.pinned', { label }) : t(locale, 'favLine.unpinned', { label });
+    } catch (e) {
+      if (chipsFeedback) chipsFeedback.textContent = e instanceof Error ? e.message : t(locale, 'favLine.updateError');
+    } finally {
+      busy = false;
+    }
+  });
+
+  const backupDeps: FavBackupDeps = { favCount: () => favs.length, reloadList: load };
+  initFavoriteBackup(backupDeps);
+
+  // El panel de sincronización (SyncPanel) activa códigos por su cuenta: pide el re-render
+  // de la lista con este evento porque la página es la única que sabe renderizarla
+  window.addEventListener('favorites:reload', () => void load());
+
+  // Cada arranque va aislado: un fallo en el import del enlace o en la sincronización no
+  // puede dejar la lista sin cargar (antes una excepción en cualquiera mataba las siguientes)
+  try {
+    consumeImportHash(backupDeps);
+  } catch (e) {
+    console.error(e);
+  }
+  try {
+    void load();
+  } catch (e) {
+    console.error(e);
+  }
+</script>

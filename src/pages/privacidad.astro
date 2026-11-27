@@ -1,0 +1,106 @@
+---
+import Legal from '../layouts/Legal.astro';
+
+export const prerender = true;
+---
+
+<Legal title="Política de privacidad" updated="agosto de 2026">
+  <p>
+    En Madrid Movilidad (madmovil.es) tratamos la mínima cantidad de datos posible: no usamos publicidad, ni analítica,
+    ni rastreadores, ni perfiles, y no cedemos tus datos a terceros con fines comerciales. Esta política explica, en
+    cumplimiento del Reglamento (UE) 2016/679 (RGPD) y de la Ley Orgánica 3/2018 (LOPDGDD), qué datos tratamos, con qué
+    finalidad y qué derechos tienes.
+  </p>
+
+  <h2>1. Responsable del tratamiento</h2>
+  <ul>
+    <li><strong>Responsable:</strong> el titular de Madrid Movilidad (particular, sin actividad económica)</li>
+    <li><strong>Contacto:</strong> <a href="mailto:info@madmovil.es">info@madmovil.es</a></li>
+  </ul>
+
+  <h2>2. Qué datos tratamos y con qué finalidad</h2>
+
+  <h3>2.1. Uso anónimo</h3>
+  <p>
+    No tratamos datos personales. Tus paradas favoritas y preferencias (por ejemplo, el tema claro u oscuro) se guardan
+    únicamente en el almacenamiento local de tu navegador (<em>localStorage</em>), sin salir nunca de tu dispositivo.
+    Puedes borrarlas en cualquier momento desde los ajustes de tu navegador.
+  </p>
+
+  <h3>2.2. Sincronización de favoritos entre dispositivos (opcional)</h3>
+  <p>
+    Si la activas, tus favoritos se <strong>cifran en tu propio dispositivo</strong> (AES-GCM-256, Web Crypto) y en
+    nuestros servidores solo se almacena el contenido cifrado, identificado por un valor derivado de forma irreversible
+    de tu código de sincronización. Ni el código ni la clave de cifrado salen de tus dispositivos: nosotros no podemos
+    descifrar ni conocer tus favoritos. <em>Finalidad:</em> permitirte llevar tus favoritos a otros dispositivos. <em>Base jurídica:</em> ejecución
+    del contrato de prestación del servicio (art. 6.1.b RGPD). La copia cifrada se
+    elimina automáticamente tras 180 días sin sincronizar y puedes borrarla cuando quieras («Borrar copia remota» en
+    Favoritos).
+  </p>
+
+  <h3>2.3. Datos técnicos</h3>
+  <p>
+    Como en cualquier servicio web, la infraestructura de red procesa de forma automatizada y temporal tu dirección IP y
+    datos básicos de la petición para enrutar el tráfico, prevenir abusos y limitar peticiones excesivas. <em>Finalidad:</em> seguridad
+    y disponibilidad del servicio. <em>Base jurídica:</em> interés legítimo (art. 6.1.f
+    RGPD). Se conservan solo durante el tiempo imprescindible con esos fines.
+  </p>
+
+  <h2>3. Publicidad, analítica y rastreo</h2>
+  <p>
+    No usamos cookies ni tecnologías equivalentes de analítica, publicidad, medición de audiencias o creación de
+    perfiles, ni cedemos datos a redes publicitarias. Puedes ver el detalle en la <a href="/cookies">política de cookies</a>.
+  </p>
+
+  <h2>4. Destinatarios y encargados del tratamiento</h2>
+  <p>No vendemos, alquilamos ni cedemos tus datos personales a terceros. Para operar el servicio utilizamos:</p>
+  <ul>
+    <li>
+      <strong>Cloudflare, Inc.:</strong> alojamiento y entrega del sitio y de su API (Workers y CDN), incluida la copia
+      cifrada de sincronización de favoritos y la comprobación anti-abusos del alta de la sincronización (Turnstile).
+      Actúa como encargado del tratamiento. Puede implicar una transferencia de datos a Estados Unidos, cubierta por el
+      marco EU-US Data Privacy Framework.
+    </li>
+  </ul>
+  <p>
+    Podremos comunicar datos a autoridades públicas únicamente cuando una obligación legal nos lo requiera (art. 6.1.c
+    RGPD).
+  </p>
+
+  <h2>5. Conservación de los datos</h2>
+  <ul>
+    <li>Favoritos y preferencias en tu navegador: hasta que los borres desde la web o tu navegador.</li>
+    <li>Copia de sincronización (cifrada): hasta 180 días sin sincronizar, o hasta que la borres («Borrar copia remota»).</li>
+    <li>Datos técnicos: plazos cortos limitados a la finalidad de seguridad indicada.</li>
+  </ul>
+
+  <h2>6. Tus derechos y cómo ejercerlos</h2>
+  <p>
+    Puedes ejercer los derechos de acceso, rectificación, supresión, oposición, limitación del tratamiento y
+    portabilidad, así como retirar el consentimiento en su caso, escribiendo a <a href="mailto:info@madmovil.es">info@madmovil.es</a> adjuntando
+    información suficiente para verificar tu
+    identidad. Responderemos en el plazo máximo de un mes. También puedes presentar una reclamación ante la Agencia
+    Española de Protección de Datos (<a href="https://www.aepd.es" rel="noopener noreferrer" target="_blank">aepd.es</a
+    >) si consideras vulnerados tus derechos.
+  </p>
+
+  <h2>7. Eliminar tus datos</h2>
+  <p>
+    Puedes hacerlo tú mismo, sin escribirnos: los favoritos y preferencias locales se gestionan y se borran desde la
+    página de <a href="/favoritos">Favoritos</a> o desde tu navegador, y la copia remota de sincronización se elimina
+    con el botón <strong>«Borrar copia remota»</strong> (de forma inmediata e irreversible). Como alternativa, puedes
+    solicitarlo por correo electrónico.
+  </p>
+
+  <h2>8. Menores de edad</h2>
+  <p>
+    Este servicio no está dirigido a menores de 14 años. Conforme al art. 7 de la LOPDGDD, el tratamiento de datos de
+    menores de 14 años requiere el consentimiento de quien ostente su patria potestad o tutela.
+  </p>
+
+  <h2>9. Cambios en esta política</h2>
+  <p>
+    Podremos actualizar esta política para adaptarla a cambios legales o en el servicio. Cualquier modificación se
+    publicará en esta misma página, indicando la fecha de la última actualización.
+  </p>
+</Legal>

@@ -1,0 +1,56 @@
+---
+// Chips de líneas de la cabecera de /parada. Cuando la parada es favorita, cada chip
+// lleva una estrella (☆/★): clic = añadir/quitar línea favorita (reemplazo del CONJUNTO
+// completo de lines en localStorage); solo cambia el icono, el chip conserva su color
+// de línea. La máquina de estado vive en lib/favlinechips (compartida con la variante
+// CRTM); este componente aporta solo el chipHtml (color vía linecolors).
+interface Props {
+  stopId: string;
+  labels: string[];
+}
+
+const { stopId, labels } = Astro.props;
+---
+
+<div id="fav-lines" data-stop-id={stopId} class="mt-4 flex flex-wrap gap-1.5">
+  {
+    labels.map((label) => (
+      <span class="rounded border border-line bg-surface-2 px-2 py-1 text-xs font-bold text-ink-2" data-line={label}>
+        {label}
+      </span>
+    ))
+  }
+</div>
+<p id="fav-lines-feedback" class="sr-only" role="status"></p>
+
+<script>
+  import { initFavoriteLineChips, type FavoriteLineChipState } from '../lib/favlinechips';
+  import { paintAndFetchLineColors } from '../lib/linecolors';
+  import { clientLocale, t } from '../lib/i18n';
+  import { escapeHtml, starSvgHtml } from '../lib/cards';
+
+  const locale = clientLocale();
+  const container = document.getElementById('fav-lines');
+
+  if (container) {
+    const labels = [...container.querySelectorAll<HTMLElement>('[data-line]')].map((el) => el.dataset.line ?? '').filter(Boolean);
+
+    function chipHtml(label: string, state: FavoriteLineChipState): string {
+      if (!state.interactive) {
+        return `<span class="rounded border border-line bg-surface-2 px-2 py-1 text-xs font-bold text-ink-2" data-line="${escapeHtml(label)}">${escapeHtml(label)}</span>`;
+      }
+      const title = state.active ? t(locale, 'favLine.unpin', { label }) : t(locale, 'favLine.pin', { label });
+      // El chip conserva siempre su color de línea; solo la estrella interna indica el estado
+      const star = starSvgHtml(state.active);
+      return `<button type="button" aria-pressed="${state.active}" title="${escapeHtml(title)}" data-line="${escapeHtml(label)}" data-label="${escapeHtml(label)}" class="inline-flex items-center gap-1 rounded border border-control-edge bg-surface-2 px-2 py-1 text-xs font-bold text-ink-2 transition focus-ring"><span>${escapeHtml(label)}</span>${star}</button>`;
+    }
+
+    initFavoriteLineChips({
+      container,
+      feedback: document.getElementById('fav-lines-feedback'),
+      labels,
+      chipHtml,
+      afterRender: (c) => void paintAndFetchLineColors(c),
+    });
+  }
+</script>

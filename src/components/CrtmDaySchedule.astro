@@ -1,0 +1,364 @@
+---
+// Horario teórico por fecha de una parada CRTM (modo date de /crtm/stops/schedule):
+// toggle "Horario teórico" + selector de fecha (hoy .. hoy+14, en hora de Madrid — el API
+// valida el mismo horizonte y da 400 fuera de él) + filtro por línea con los chips de
+// siempre. Vale para TODAS las redes (interurbano/urbano/ML/cercanías); la página OCULTA
+// la sección cuando la parada entera es de red sin horarios oficiales sabida por los
+// chips (metro en catálogo: noSchedule de /crtm/lines) y una línea así filtrada en una
+// parada MIXTA da el empty "Sin horarios oficiales" (el API responde count 0 sin
+// noScheduleData — distinguible de "sin salidas ese día"). En cercanías una fecha más
+// allá de la ventana móvil de Renfe llega con calendarFallback → nota "posiblemente
+// obsoleto". El tablón del día se agrupa por línea → sentido (headsign) con las horas en
+// píldoras; para HOY las salidas ya pasadas quedan atenuadas (departureISO vencido,
+// calculado en el cliente al renderizar). Todo client-side on-demand: el SSR de la
+// ficha no paga ninguna llamada extra y el endpoint cachea 300/3600, así que tocar el
+// toggle/fecha/línea no revienta el rate limit. Techo del API: 1000 salidas por consulta
+// (un intercambiador supera las 1000/día) → si count llega a 1000 se avisa y el filtro
+// por línea es el desahogo (07301 + line=224 → día completo de la 224).
+import { crtmLineItemStyle } from '../lib/crtm';
+import { translator } from '../lib/i18n';
+import type { CrtmLineColors, CrtmNetwork } from '../types/crtm';
+
+interface Props {
+  stopCode: string;
+  lines: ({ label: string; network: CrtmNetwork | null; noSchedule?: boolean } & CrtmLineColors)[];
+}
+
+const { stopCode, lines } = Astro.props;
+const locale = Astro.locals.locale ?? 'es';
+const tr = translator(locale);
+---
+
+<section id="crtm-day" data-stop-code={stopCode} class="mt-8" aria-label={tr('daySchedule.aria')}>
+  <div class="mb-2.5 flex flex-wrap items-center gap-2">
+    <h2 class="flex-1 text-[17px] font-bold tracking-tight">{tr('daySchedule.heading')}</h2>
+    <button
+      id="day-toggle"
+      type="button"
+      aria-expanded="false"
+      aria-controls="day-panel"
+      class="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-control-edge bg-surface px-3 py-1.5 text-[12.5px] font-semibold text-ink-2 shadow-xs transition hover:bg-surface-2 hover:text-ink active:bg-surface-2 focus-ring"
+    >
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        class="size-3.5"
+        aria-hidden="true"
+      >
+        <rect x="3" y="4" width="18" height="18" rx="2"></rect>
+        <path d="M16 2v4M8 2v4M3 10h18"></path>
+      </svg>
+      <span data-day-label>{tr('daySchedule.show')}</span>
+    </button>
+  </div>
+
+  <div id="day-panel" hidden>
+    <div class="mb-3 flex flex-wrap items-center gap-2">
+      <label for="day-date" class="mr-0.5 text-[11px] font-semibold uppercase tracking-[0.1em] text-ink-3">
+        {tr('daySchedule.dateLabel')}
+      </label>
+      <select
+        id="day-date"
+        class="rounded-lg border border-control-edge bg-surface px-2.5 py-1.5 text-[13px] font-semibold text-ink shadow-xs transition hover:border-ink-3 focus-ring"
+      >
+      </select>
+      <span id="day-count" class="ml-auto text-[11.5px] font-semibold tabular-nums text-ink-3" aria-live="polite"></span>
+    </div>
+
+    <div class="mb-3 flex flex-wrap items-center gap-1.5" role="group" aria-label={tr('daySchedule.filterAria')}>
+      <button
+        type="button"
+        data-day-line="all"
+        aria-pressed="true"
+        class="rounded-full border border-control-edge bg-surface px-2.5 py-1 text-[11.5px] font-semibold text-ink-2 shadow-xs transition hover:bg-surface-2 hover:text-ink active:bg-surface-2 focus-ring aria-pressed:border-transparent aria-pressed:bg-brand aria-pressed:text-on-brand"
+      >
+        {tr('daySchedule.allLines')}
+      </button>
+      {lines.map((l) => (
+        <button
+          type="button"
+          data-day-line={l.label}
+          data-day-noschedule={l.noSchedule ? 'true' : undefined}
+          aria-pressed="false"
+          data-network={l.network}
+          style={crtmLineItemStyle(l)}
+          class:list={[
+            'crtm-badge grid h-7 min-w-[34px] shrink-0 place-items-center rounded-md px-1.5 text-[13px] font-bold tabular-nums transition focus-ring aria-pressed:ring-2 aria-pressed:ring-brand aria-pressed:ring-offset-2 aria-pressed:ring-offset-page',
+            !l.network && !l.color && 'bg-ink text-surface',
+          ]}
+        >
+          {l.label}
+        </button>
+      ))}
+    </div>
+
+    <div id="day-notes"></div>
+    <div id="day-body"></div>
+
+    <p class="mt-2 text-[11px] leading-relaxed text-ink-3">{tr('daySchedule.attribution')}</p>
+  </div>
+</section>
+
+<script>
+  import { escapeHtml } from '../lib/cards';
+  import { API_BASE_URL } from '../lib/config';
+  import { chipFallbackColors, displayStopName, noScheduleNoticeHtml } from '../lib/crtm';
+  import { crtmLineColor } from '../lib/crtmlinecolors';
+  import { clientLocale, t, tN } from '../lib/i18n';
+  import type { CrtmDaySchedule, CrtmDeparture } from '../types/crtm';
+
+  const locale = clientLocale();
+  const section = document.getElementById('crtm-day');
+
+  if (section) {
+    const code = section.dataset.stopCode!;
+    const toggle = document.getElementById('day-toggle') as HTMLButtonElement | null;
+    const toggleLabel = section.querySelector<HTMLElement>('[data-day-label]');
+    const panel = document.getElementById('day-panel');
+    const dateSelect = document.getElementById('day-date') as HTMLSelectElement | null;
+    const countEl = document.getElementById('day-count');
+    const notesEl = document.getElementById('day-notes');
+    const bodyEl = document.getElementById('day-body');
+    const chips = Array.from(section.querySelectorAll<HTMLButtonElement>('[data-day-line]'));
+
+    const HORIZON_DAYS = 14;
+
+    let open = false;
+    let ymd: string | null = null;
+    let lineFilter: string | null = null;
+    let seq = 0;
+
+    // "Hoy" lo decide el API en hora de Madrid: las fechas del selector también (un cliente
+    // fuera de España no debe poder elegir un ayer local que el API rechaza con 400)
+    function madridTodayYMD(): string {
+      return new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Madrid', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+    }
+
+    function optionValue(days: number): string {
+      const d = new Date(`${madridTodayYMD()}T12:00:00Z`);
+      d.setUTCDate(d.getUTCDate() + days);
+      return d.toISOString().slice(0, 10);
+    }
+
+    function optionLabel(value: string, days: number): string {
+      const d = new Date(`${value}T12:00:00Z`);
+      const loc = locale === 'en' ? 'en-GB' : 'es-ES';
+      const weekday = new Intl.DateTimeFormat(loc, { weekday: 'short', timeZone: 'Europe/Madrid' }).format(d).replace(/\.$/, '');
+      const dayMonth = new Intl.DateTimeFormat(loc, { day: '2-digit', month: '2-digit', timeZone: 'Europe/Madrid' }).format(d);
+      const prefix = days === 0 ? t(locale, 'daySchedule.today') : days === 1 ? t(locale, 'daySchedule.tomorrow') : '';
+      return prefix ? `${prefix} · ${weekday} ${dayMonth}` : `${weekday} ${dayMonth}`;
+    }
+
+    function buildDateOptions(): void {
+      if (!dateSelect) return;
+      const values: string[] = [];
+      for (let i = 0; i <= HORIZON_DAYS; i++) values.push(optionValue(i));
+      // Tab abierta cruzando medianoche: la fecha elegida puede haber quedado fuera del
+      // horizonte → recalza con el hoy nuevo
+      if (!ymd || !values.includes(ymd)) ymd = values[0];
+      dateSelect.innerHTML = values.map((v, i) => `<option value="${v}">${escapeHtml(optionLabel(v, i))}</option>`).join('');
+      dateSelect.value = ymd;
+    }
+
+    function warnNoteHtml(text: string): string {
+      return `
+        <p class="mb-3 flex items-start gap-3 rounded-xl border border-warn bg-warn-soft px-4 py-2.5 text-[13px] font-medium text-warn-ink" role="note">
+          <span class="mt-px grid size-5 shrink-0 place-items-center rounded-full bg-warn text-[11px] font-bold text-page" aria-hidden="true">!</span>
+          <span class="min-w-0">${escapeHtml(text)}</span>
+        </p>`;
+    }
+
+    function infoNoteHtml(text: string): string {
+      return `<p class="mb-3 rounded-xl border border-line bg-surface-2 px-4 py-2 text-[12px] font-medium text-ink-2" role="note">${escapeHtml(text)}</p>`;
+    }
+
+    const loadingHtml = `<p class="animate-pulse rounded-xl border border-line bg-surface px-6 py-8 text-center text-sm font-medium text-ink-3 shadow-xs">${escapeHtml(t(locale, 'daySchedule.loading'))}</p>`;
+
+    function emptyHtml(noScheduleLine = false): string {
+      return `
+        <p class="rounded-xl border border-line bg-surface px-6 py-8 text-center shadow-xs">
+          <span class="block font-semibold text-ink">${escapeHtml(t(locale, noScheduleLine ? 'crtm.noScheduleShort' : 'daySchedule.emptyTitle'))}</span>
+          <span class="mt-1 block text-sm text-ink-3">${escapeHtml(t(locale, noScheduleLine ? 'crtm.noScheduleStopNote' : 'daySchedule.emptyBody'))}</span>
+        </p>`;
+    }
+
+    function errorHtml(): string {
+      return `
+        <div class="flex flex-wrap items-center gap-3 rounded-xl border border-warn bg-warn-soft px-4 py-3 text-sm font-medium text-warn-ink" role="alert">
+          <span class="mt-px grid size-5 shrink-0 place-items-center rounded-full bg-warn text-[11px] font-bold text-page" aria-hidden="true">!</span>
+          <span class="min-w-0 flex-1">${escapeHtml(t(locale, 'daySchedule.error'))}</span>
+          <button type="button" data-day-retry class="shrink-0 rounded-lg border border-control-edge bg-surface px-3 py-1.5 text-[13px] font-semibold text-ink shadow-xs transition hover:bg-surface-2 focus-ring">${escapeHtml(t(locale, 'daySchedule.retry'))}</button>
+        </div>`;
+    }
+
+    interface DirBucket {
+      headsign: string;
+      dir: number;
+      times: { time: string; iso: string }[];
+    }
+
+    interface LineGroup {
+      line: string;
+      network?: string;
+      firstISO: string;
+      total: number;
+      seen: Set<string>;
+      dirs: Map<string, DirBucket>;
+    }
+
+    // La respuesta viene ordenada por hora efectiva: las líneas NO son contiguas. Se agrupa
+    // por label (Map) y cada grupo se ordena tras construirlo por su primera salida; los
+    // duplicados exactos (misma línea+sentido+headsign+hora) se deduplican por píldora
+    function groupDepartures(departures: CrtmDeparture[]): LineGroup[] {
+      const groups = new Map<string, LineGroup>();
+      for (const d of departures) {
+        const line = d.line ?? '—';
+        let group = groups.get(line);
+        if (!group) {
+          group = { line, network: d.network, firstISO: d.departureISO, total: 0, seen: new Set(), dirs: new Map() };
+          groups.set(line, group);
+        }
+        const dedupeKey = `${d.dir}|${d.headsign}|${d.time}`;
+        if (group.seen.has(dedupeKey)) continue;
+        group.seen.add(dedupeKey);
+        group.total += 1;
+        const dirKey = `${d.dir}|${d.headsign}`;
+        let bucket = group.dirs.get(dirKey);
+        if (!bucket) {
+          bucket = { headsign: d.headsign, dir: d.dir, times: [] };
+          group.dirs.set(dirKey, bucket);
+        }
+        bucket.times.push({ time: d.time, iso: d.departureISO });
+      }
+      return [...groups.values()].sort((a, b) => a.firstISO.localeCompare(b.firstISO));
+    }
+
+    function chipHtml(g: LineGroup): string {
+      const network = g.network ? ` data-network="${escapeHtml(g.network)}"` : '';
+      const known = chipFallbackColors(g.line, g.network ?? null) ?? crtmLineColor(g.line);
+      const style = known ? ` style="background:${known.color};color:${known.textColor}"` : '';
+      const neutral = !g.network && !known ? ' bg-ink text-surface' : '';
+      return `<span class="crtm-badge grid h-7 min-w-[34px] shrink-0 place-items-center rounded-md px-1.5 text-[13px] font-bold tabular-nums${neutral}"${network}${style}>${escapeHtml(g.line)}</span>`;
+    }
+
+    function render(data: CrtmDaySchedule): void {
+      if (!bodyEl || !notesEl || !countEl) return;
+      if (data.noScheduleData) {
+        notesEl.innerHTML = '';
+        countEl.textContent = '';
+        bodyEl.innerHTML = noScheduleNoticeHtml(locale, data.noScheduleData, { note: t(locale, 'crtm.noScheduleStopNote') });
+        return;
+      }
+      if (data.departures.length === 0) {
+        // Filtro por línea de red sin horarios (metro en catálogo) en una parada MIXTA:
+        // el API responde count 0 SIN noScheduleData — distinguible de "sin servicio ese
+        // día" porque el chip ya lo sabe (noSchedule de /crtm/lines)
+        const filterIsNoSchedule = lineFilter !== null && chips.some((c) => c.dataset.dayLine === lineFilter && c.dataset.dayNoschedule === 'true');
+        countEl.textContent = filterIsNoSchedule ? '' : tN(locale, 0, 'daySchedule.count', { n: 0 });
+        notesEl.innerHTML = '';
+        bodyEl.innerHTML = emptyHtml(filterIsNoSchedule);
+        return;
+      }
+      const isToday = ymd === madridTodayYMD();
+      const nowMs = Date.now();
+      let hasPast = false;
+      let hasFuture = false;
+      const groups = groupDepartures(data.departures);
+      // El API puede devolver la misma salida dos veces (trips que pasan por la parada en
+      // bucle: mismos dir+headsign+hora) → el total mostrado es el de píldoras ÚNICAS
+      const shownTotal = groups.reduce((acc, g) => acc + g.total, 0);
+      countEl.textContent = tN(locale, shownTotal, 'daySchedule.count', { n: shownTotal });
+      const html = groups
+        .map((g) => {
+          const dirBlocks = [...g.dirs.values()]
+            .map((b) => {
+              const pills = b.times
+                .map((tm) => {
+                  const past = isToday && Date.parse(tm.iso) < nowMs;
+                  if (past) hasPast = true;
+                  else hasFuture = true;
+                  return past
+                    ? `<span class="px-1 py-0.5 text-[12px] font-medium tabular-nums text-ink-3">${escapeHtml(tm.time)}</span>`
+                    : `<span class="rounded-md bg-surface-2 px-1.5 py-0.5 text-[12px] font-semibold tabular-nums text-ink">${escapeHtml(tm.time)}</span>`;
+                })
+                .join('');
+              return `
+                <div class="px-3 py-2.5">
+                  <p class="mb-1.5 text-[12px] font-semibold text-ink-2"><span aria-hidden="true">→ </span>${escapeHtml(displayStopName(b.headsign))}</p>
+                  <p class="flex flex-wrap gap-1">${pills}</p>
+                </div>`;
+            })
+            .join('');
+          return `
+            <div class="mb-3 overflow-hidden rounded-xl border border-line bg-surface shadow-xs last:mb-0">
+              <div class="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 border-b border-line px-3 py-2">
+                ${chipHtml(g)}
+                <span class="ml-auto shrink-0 text-[11px] font-semibold tabular-nums text-ink-3">${escapeHtml(tN(locale, g.total, 'daySchedule.count', { n: g.total }))}</span>
+              </div>
+              <div class="divide-y divide-line">${dirBlocks}</div>
+            </div>`;
+        })
+        .join('');
+      const notes: string[] = [];
+      if (data.count >= 1000) notes.push(warnNoteHtml(t(locale, 'daySchedule.truncated')));
+      if (data.calendarFallback) notes.push(warnNoteHtml(t(locale, 'daySchedule.stale')));
+      if (isToday && hasPast && hasFuture) notes.push(infoNoteHtml(t(locale, 'daySchedule.pastNote')));
+      notesEl.innerHTML = notes.join('');
+      bodyEl.innerHTML = html;
+    }
+
+    async function load(): Promise<void> {
+      const mySeq = ++seq;
+      if (notesEl) notesEl.innerHTML = '';
+      if (countEl) countEl.textContent = '';
+      if (bodyEl) bodyEl.innerHTML = loadingHtml;
+      try {
+        const params = new URLSearchParams({ date: ymd! });
+        if (lineFilter) params.set('line', lineFilter);
+        const res = await fetch(`${API_BASE_URL}/crtm/stops/schedule/${encodeURIComponent(code)}?${params.toString()}`);
+        const json = (await res.json()) as { status: string; data?: CrtmDaySchedule };
+        if (!res.ok || json.status !== 'success' || !json.data) throw new Error('respuesta de error');
+        if (mySeq !== seq) return;
+        render(json.data);
+      } catch {
+        if (mySeq !== seq) return;
+        if (bodyEl) bodyEl.innerHTML = errorHtml();
+      }
+    }
+
+    function setOpen(value: boolean): void {
+      open = value;
+      if (panel) panel.hidden = !open;
+      toggle?.setAttribute('aria-expanded', String(open));
+      if (toggleLabel) toggleLabel.textContent = t(locale, open ? 'daySchedule.hide' : 'daySchedule.show');
+      if (open) {
+        buildDateOptions();
+        void load();
+      }
+    }
+
+    toggle?.addEventListener('click', () => setOpen(!open));
+
+    dateSelect?.addEventListener('change', () => {
+      if (dateSelect.value) ymd = dateSelect.value;
+      void load();
+    });
+
+    chips.forEach((chip) =>
+      chip.addEventListener('click', () => {
+        const label = chip.dataset.dayLine ?? '';
+        lineFilter = label === '' ? null : label;
+        chips.forEach((c) => c.setAttribute('aria-pressed', String((c.dataset.dayLine ?? '') === label)));
+        void load();
+      })
+    );
+
+    bodyEl?.addEventListener('click', (e) => {
+      if ((e.target as HTMLElement).closest('[data-day-retry]')) void load();
+    });
+  }
+</script>

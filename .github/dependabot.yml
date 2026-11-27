@@ -1,0 +1,12 @@
+version: 2
+updates:
+  # Dependencias npm (Astro, Tailwind, Leaflet...)
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+  # Acciones del CI
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

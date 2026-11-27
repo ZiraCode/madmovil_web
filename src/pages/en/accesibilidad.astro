@@ -1,0 +1,59 @@
+---
+import Legal from '../../layouts/Legal.astro';
+
+export const prerender = true;
+
+Astro.locals.locale = 'en';
+---
+
+<Legal title="Accessibility statement" updated="August 2026">
+  <p>
+    Madrid Movilidad was born with the aim that anyone can consult public transport information for the Region
+    of Madrid regardless of their abilities, their device or their network conditions. This statement explains
+    our level of accessibility and how to notify us of any barrier.
+  </p>
+
+  <h2>1. Commitment and level of conformance</h2>
+  <p>
+    This website has been designed and developed to comply with the W3C <strong>WCAG 2.1, level AA</strong> guidelines, the recognised
+    reference in European accessibility regulations. The statement is based on a <strong>self-assessment</strong> carried out by the site
+    owner; it has not been audited by an independent third party.
+  </p>
+
+  <h2>2. Measures adopted</h2>
+  <ul>
+    <li>“Mobile-first” responsive design: content reflows without being cut off on small screens.</li>
+    <li>Full keyboard navigation, with a visible and consistent focus indicator.</li>
+    <li>Sufficient text colour contrasts, in both the light and dark themes.</li>
+    <li>
+      Semantic use of headings, lists, regions and form labels; status messages announced to screen readers.
+    </li>
+    <li>Decorative icons hidden from assistive technologies; alternative text on informative images.</li>
+    <li>Respect for the system’s <code>prefers-reduced-motion</code> preference in animations.</li>
+    <li>The main searches work without JavaScript (forms with page reload).</li>
+  </ul>
+
+  <h2>3. Non-accessible content and known limitations</h2>
+  <ul>
+    <li>
+      <strong>Interactive maps</strong> (Leaflet with OpenStreetMap tiles): maps have limited textual
+      alternatives; the equivalent information (nearby stops, routes and stop listings by direction) is always
+      available in text or list format.
+    </li>
+    <li>
+      <strong>Third-party documents:</strong> the linked incident PDFs come from EMT Madrid (in Spanish) and may
+      not meet accessibility requirements; their content is summarised in text on the site itself.
+    </li>
+    <li>
+      <strong>Real-time data:</strong> audible alerts and automatic updates may not be available with screen
+      readers in all views.
+    </li>
+  </ul>
+
+  <h2>4. Reporting barriers</h2>
+  <p>
+    If you encounter any difficulty accessing content or functionality, please write to <a href="mailto:info@madmovil.es">info@madmovil.es</a> indicating
+    the page and the problem detected. We will try to provide an accessible response and a reasonable solution as
+    soon as possible.
+  </p>
+</Legal>

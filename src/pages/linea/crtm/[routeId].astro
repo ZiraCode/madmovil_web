@@ -1,0 +1,603 @@
+---
+import Layout from '../../../layouts/Layout.astro';
+import ErrorState from '../../../components/ErrorState.astro';
+import NoScheduleNotice from '../../../components/NoScheduleNotice.astro';
+import { getCrtmLineDetail, getCrtmLineIncidents, getCrtmLineRoute, getCrtmLineTimetable, mapApiError } from '../../../lib/api';
+import { crtmLineItemStyle, daysLabel, displayStopName, networkLabel, trimMunicipality } from '../../../lib/crtm';
+import { gtfsTimeLabel } from '../../../lib/departures';
+import { jsonForIsland } from '../../../lib/islands';
+import { href, t, tN, translator } from '../../../lib/i18n';
+import { busRouteJsonLd, jsonLdHtml, pageUrl } from '../../../lib/seo';
+import { safeExternalUrl } from '../../../lib/url';
+import type { CrtmLineDetailDoc, CrtmLineIncidents, CrtmLineRouteDoc, CrtmTimetableDoc } from '../../../types/crtm';
+import 'leaflet/dist/leaflet.css';
+
+export const prerender = false;
+
+const locale = Astro.locals.locale ?? 'es';
+const tr = translator(locale);
+const routeId = Astro.params.routeId ?? '';
+
+let notFound = false;
+let detail: CrtmLineDetailDoc | null = null;
+let timetable: CrtmTimetableDoc | null = null;
+let routeDoc: CrtmLineRouteDoc | null = null;
+
+if (!/^[\w-]+$/.test(routeId)) {
+  notFound = true;
+  Astro.response.status = 404;
+} else {
+  // detail y timetable responden data.lines (array por colisión de redes); con routeId exacto hay 1.
+  // route es fail-soft: 404 "sin geometría" u otro error → la página sigue sin sección de mapa
+  const [detailResult, timetableResult, routeResult] = await Promise.allSettled([
+    getCrtmLineDetail(routeId),
+    getCrtmLineTimetable(routeId),
+    getCrtmLineRoute(routeId),
+  ]);
+
+  if (detailResult.status === 'fulfilled') {
+    detail = detailResult.value.lines[0] ?? null;
+  }
+  if (timetableResult.status === 'fulfilled') {
+    timetable = timetableResult.value.lines[0] ?? null;
+  }
+  if (routeResult.status === 'fulfilled') {
+    routeDoc = routeResult.value;
+  }
+
+  if (!detail) {
+    const failure = mapApiError(detailResult.status === 'rejected' ? detailResult.reason : null);
+    if (failure.notFound) {
+      notFound = true;
+      Astro.response.status = 404;
+    } else {
+      Astro.response.status = 502;
+    }
+  }
+}
+
+// Incidencias de Cercanías (feed del widget oficial del CRTM): SOLO se consulta para
+// network cercanias — el feed no publica el resto de redes. Dato nice-to-have con
+// fail-soft total: 503 del widget o cualquier error → sección oculta, la ficha sigue.
+// count 0 → tampoco se pinta
+let lineIncidents: CrtmLineIncidents | null = null;
+if (detail?.network === 'cercanias') {
+  const incidents = await getCrtmLineIncidents(routeId).catch(() => null);
+  if (incidents && incidents.count > 0) {
+    lineIncidents = incidents;
+  }
+}
+
+const municipality = trimMunicipality(detail?.municipality ?? timetable?.municipality ?? '');
+
+// Modo catálogo: feed de Metro caducado → hay direcciones/estaciones/recorrido, pero NO
+// horarios. En su lugar va el banner (NoScheduleNotice) y la página sigue igual por lo demás.
+const noSchedule = detail?.noSchedule ?? timetable?.noSchedule ?? null;
+
+// Solo http(s): route_url viene del feed GTFS y un esquema javascript: no debe llegar al href
+const officialUrl = safeExternalUrl(detail?.url);
+
+// HTML cacheable en edge; s-maxage 3600 (W2, auditoría CPU 2026-11-27): detail/timetable
+// ya viajan a 3600 en el CDN del API; el banner de incidencias de cercanías (API a 1800)
+// aceptado hasta ~1 h stale. Solo en 200 (404/502 no se cachean)
+if (detail) {
+  Astro.response.headers.set('Cache-Control', 'public, max-age=60, s-maxage=3600');
+}
+
+// Vigencia de cada servicio (formato GTFS YYYYMMDD → legible)
+function dateLabel(gtfs: string): string {
+  if (!/^\d{8}$/.test(gtfs)) return gtfs;
+  return `${gtfs.slice(6, 8)}/${gtfs.slice(4, 6)}/${gtfs.slice(0, 4)}`;
+}
+
+// Horarios por dirección: first/last con madrugada, services con daysLabel + vigencia + trips.
+// El feed de cercanías publica un servicio por FECHA (days de un solo día, from === to:
+// ~30 filas por sentido): se agrupan por patrón de semana para no listar el calendario
+// entero. Los servicios con rango de vigencia (bus/ml/metro) van tal cual. En GTFS el
+// orden lexicográfico de HH:MM (con madrugadas ≥24:00) ES el temporal: min/max de cadena.
+interface RawService {
+  days: number[] | string;
+  from: string;
+  to: string;
+  first?: string;
+  last?: string;
+  trips?: number;
+}
+
+function groupServices(raw: RawService[]): Array<{
+  days: number[] | string;
+  from: string;
+  to: string;
+  first: string | null;
+  last: string | null;
+  trips: number | null;
+  tripsRange: [number, number] | null;
+  dates: number;
+}> {
+  const singles = new Map<string, RawService[]>();
+  const rest: RawService[] = [];
+  for (const s of raw) {
+    if (s.from && s.from === s.to) {
+      const key = typeof s.days === 'string' ? s.days.trim().split(/\s+/).join(' ') : s.days.join(' ');
+      const bucket = singles.get(key);
+      if (bucket) bucket.push(s);
+      else singles.set(key, [s]);
+    } else {
+      rest.push(s);
+    }
+  }
+  const views = rest.map((s) => ({
+    days: s.days,
+    from: s.from,
+    to: s.to,
+    first: s.first ?? null,
+    last: s.last ?? null,
+    trips: s.trips ?? null,
+    tripsRange: null as [number, number] | null,
+    dates: 1,
+  }));
+  for (const [, group] of [...singles.entries()].sort(([, a], [, b]) => (a[0].from < b[0].from ? -1 : a[0].from > b[0].from ? 1 : 0))) {
+    const firsts = group.map((s) => s.first).filter((v): v is string => v !== undefined);
+    const lasts = group.map((s) => s.last).filter((v): v is string => v !== undefined);
+    const tripsVals = group.map((s) => s.trips).filter((v): v is number => v !== undefined);
+    const trips = tripsVals.length > 0 && tripsVals.every((v) => v === tripsVals[0]) ? tripsVals[0] : null;
+    views.push({
+      days: group[0].days,
+      from: group.reduce((min, s) => (s.from < min ? s.from : min), group[0].from),
+      to: group.reduce((max, s) => (s.to > max ? s.to : max), group[0].to),
+      first: firsts.length > 0 ? firsts.reduce((a, b) => (a <= b ? a : b)) : null,
+      last: lasts.length > 0 ? lasts.reduce((a, b) => (a >= b ? a : b)) : null,
+      trips,
+      tripsRange: trips === null && tripsVals.length > 0 ? [Math.min(...tripsVals), Math.max(...tripsVals)] : null,
+      dates: group.length,
+    });
+  }
+  return views;
+}
+
+const directions = (timetable ?? detail)?.directions.map((dir) => {
+  const services =
+    'services' in dir && dir.services
+      ? groupServices(dir.services).map((s) => ({
+          days: daysLabel(locale, s.days),
+          from: dateLabel(s.from),
+          to: dateLabel(s.to),
+          first: s.first !== null ? gtfsTimeLabel(locale, s.first) : '',
+          last: s.last !== null ? gtfsTimeLabel(locale, s.last) : '',
+          trips: s.trips,
+          tripsRange: s.tripsRange,
+          dates: s.dates,
+        }))
+      : [];
+  return {
+    id: dir.id,
+    headsign: dir.headsign,
+    first: 'first' in dir && dir.first ? gtfsTimeLabel(locale, dir.first) : '',
+    last: 'last' in dir && dir.last ? gtfsTimeLabel(locale, dir.last) : '',
+    stops: detail?.directions.find((d) => d.id === dir.id)?.stops ?? [],
+    services,
+  };
+});
+
+// Datos del mapa: geometría del route doc + paradas del detail (que ya las trae), por dirección.
+// ML, metro y cercanías usan su color oficial (hex, igual en claro/oscuro); el resto, el tono de su red.
+const tone = detail?.color
+  ? `#${detail.color}`
+  : detail?.network === 'interurban'
+    ? 'var(--color-crtm-inter)'
+    : detail?.network === 'ml'
+      ? 'var(--color-crtm-ml)'
+      : detail?.network === 'metro'
+        ? 'var(--color-crtm-metro)'
+        : detail?.network === 'cercanias'
+          ? 'var(--color-crtm-cercanias)'
+          : 'var(--color-crtm-urban)';
+const mapDirections =
+  routeDoc && detail
+    ? routeDoc.directions.map((d) => ({
+        key: `d${d.id}`,
+        headsign: d.headsign,
+        distanceM: d.distanceM,
+        geometry: d.geometry,
+        stops: detail.directions.find((x) => x.id === d.id)?.stops ?? [],
+      }))
+    : [];
+
+// SEO: título con label + red + "horarios" (queries de tipo "horario línea X")
+const seoNetwork = detail ? networkLabel(locale, detail.network) : '';
+const lineJsonLd = detail
+  ? jsonLdHtml(
+      busRouteJsonLd({
+        name: `${t(locale, 'line.title', { label: detail.label })} (${seoNetwork}): ${detail.name}`,
+        url: pageUrl(`/linea/crtm/${encodeURIComponent(routeId)}`, locale),
+        provider: detail.network === 'cercanias' ? 'Renfe Cercanías' : 'CRTM',
+      })
+    )
+  : null;
+---
+
+<Layout
+  title={detail ? t(locale, 'lineCrtm.seoTitle', { label: detail.label, network: seoNetwork }) : t(locale, 'error.lineNotFoundTitle')}
+  description={
+    detail
+      ? t(locale, 'lineCrtm.seoDescription', {
+          label: detail.label,
+          network: detail.network === 'cercanias' ? networkLabel(locale, detail.network) : `${networkLabel(locale, detail.network)} CRTM`,
+          name: detail.name,
+          municipality,
+        })
+      : undefined
+  }
+>
+  {lineJsonLd && <script type="application/ld+json" set:html={lineJsonLd} />}
+  {
+    notFound ? (
+      <ErrorState
+        tone="neutral"
+        title={t(locale, 'error.lineNotFoundTitle')}
+        body={t(locale, 'error.crtmLineNotFoundBody')}
+        action={{ path: '/lineas', label: t(locale, 'error.allLines') }}
+      />
+    ) : !detail ? (
+      <ErrorState tone="danger" title={t(locale, 'error.loadLineTitle')} body={t(locale, 'error.tryAgainSoon')} />
+    ) : (
+      <div
+        class="crtm-line-page"
+        data-network={detail.network}
+        data-dir="both"
+        style={`--dir-a:${tone};--dir-b:color-mix(in oklab, ${tone} 58%, var(--color-ink))`}
+      >
+        <section class="flex items-start gap-3">
+          <span
+            class="crtm-badge grid h-12 min-w-12 shrink-0 place-items-center rounded-lg px-2 text-lg font-bold tabular-nums"
+            data-network={detail.network}
+            style={crtmLineItemStyle(detail)}
+          >
+            {detail.label}
+          </span>
+          <div class="min-w-0 flex-1">
+            <h1 class="text-[17px] font-bold leading-[1.35] tracking-tight text-ink" style="text-wrap:pretty">
+              {detail.name}
+            </h1>
+            <p class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs font-medium text-ink-2">
+              <span class="font-semibold">{detail.network === 'cercanias' ? networkLabel(locale, detail.network) : `${networkLabel(locale, detail.network)} CRTM`}</span>
+              <span aria-hidden="true">·</span>
+              <span>{municipality}</span>
+            </p>
+          </div>
+          {officialUrl && (
+            <a
+              href={officialUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              class="hidden shrink-0 rounded-lg border border-control-edge bg-surface px-3 py-2 text-xs font-semibold text-ink shadow-xs transition hover:bg-surface-2 focus-ring sm:inline-block"
+            >
+              {tr('lineCrtm.officialSheet')}
+            </a>
+          )}
+        </section>
+
+        {officialUrl && (
+          <a
+            href={officialUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            class="mt-3 inline-block rounded-lg border border-control-edge bg-surface px-3 py-2 text-xs font-semibold text-ink shadow-xs transition hover:bg-surface-2 focus-ring sm:hidden"
+          >
+            {tr('lineCrtm.officialSheet')}
+          </a>
+        )}
+
+        {lineIncidents && (
+          <section class="mt-4 rounded-lg border border-warn bg-warn-soft px-4 py-3.5 shadow-xs" role="status" aria-label={t(locale, 'line.incidentsAria')}>
+            <div class="flex items-start gap-3">
+              <span class="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full bg-warn text-[11px] font-bold text-page" aria-hidden="true">
+                !
+              </span>
+              <div class="min-w-0 text-sm font-medium text-warn-ink">
+                <p class="font-semibold">{tN(locale, lineIncidents.count, 'lineCrtm.incidentsAffect')}</p>
+                <ul class="mt-1.5 space-y-2.5">
+                  {lineIncidents.incidents.map((incident) => (
+                    <li>
+                      <p>{incident.description}</p>
+                      {incident.affectedStops.length > 0 && (
+                        <div class="mt-1.5">
+                          <p class="text-xs font-semibold">{tr('lineCrtm.affectedStops')}:</p>
+                          <ul class="mt-1 flex flex-wrap gap-1.5">
+                            {incident.affectedStops.map((stop) => (
+                              <li>
+                                {stop.stopCode ? (
+                                  <a
+                                    href={href(`/parada/crtm/${stop.stopCode}`, locale)}
+                                    class="inline-block rounded-full border border-control-edge bg-surface px-2 py-0.5 text-xs font-semibold text-ink transition hover:bg-surface-2 focus-ring"
+                                  >
+                                    {displayStopName(stop.name)}
+                                  </a>
+                                ) : (
+                                  <span class="inline-block rounded-full border border-line bg-surface px-2 py-0.5 text-xs font-semibold text-ink-2">
+                                    {displayStopName(stop.name)}
+                                  </span>
+                                )}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+                {locale === 'en' && <p class="mt-1.5 text-xs">{t(locale, 'lineCrtm.incidentsFeedEsNote')}</p>}
+                <p class="mt-2 text-xs">{t(locale, 'lineCrtm.incidentsAttribution')}</p>
+              </div>
+            </div>
+          </section>
+        )}
+
+        {noSchedule ? (
+          <NoScheduleNotice
+            class="mt-4"
+            calendarEnd={noSchedule.calendarEnd}
+            feedVersions={noSchedule.feedVersions}
+            note={t(locale, 'crtm.noScheduleLineNote')}
+          />
+        ) : (
+          directions && directions.length > 0 && (
+            <section class="mt-4 overflow-hidden rounded-xl border border-line bg-surface shadow-xs" aria-label={tr('line.timetable')}>
+              <h2 class="border-b border-line px-4 py-3 text-xs font-semibold uppercase tracking-wide text-ink-3">{tr('line.timetable')}</h2>
+              <div class="divide-y divide-line">
+                {directions.map((dir) => (
+                  <div class="px-4 py-3.5">
+                    <div class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+                      <p class="min-w-0 text-sm font-semibold text-ink">{displayStopName(dir.headsign)}</p>
+                    {dir.first && dir.last && (
+                      <p class="shrink-0 text-xs font-medium tabular-nums text-ink-2">
+                        {dir.first} – {dir.last}
+                      </p>
+                    )}
+                  </div>
+                      {dir.services.length > 0 && (
+                        <ul class="mt-2 space-y-1">
+                          {dir.services.map((s) => (
+                            <li class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs tabular-nums text-ink-3">
+                              <span class="font-semibold text-ink-2">{s.days}</span>
+                              {s.first && <span>{s.first} – {s.last}</span>}
+                              {s.trips !== null && <span>· {tN(locale, s.trips, 'lineCrtm.trips', { n: s.trips })}</span>}
+                              {s.tripsRange && <span>· {t(locale, 'lineCrtm.tripsRange', { min: s.tripsRange[0], max: s.tripsRange[1] })}</span>}
+                              {s.dates > 1 && <span>· {tN(locale, s.dates, 'lineCrtm.datesCount', { n: s.dates })}</span>}
+                              <span class="w-full text-[11px] text-ink-3 sm:w-auto">{t(locale, 'lineCrtm.validFromTo', { from: s.from, to: s.to })}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  ))}
+                </div>
+            </section>
+          )
+        )}
+
+        {mapDirections.length > 0 && (
+          <section class="mt-6" aria-label={tr('line.routeAria')}>
+            <h2 class="text-lg font-bold tracking-tight">{tr('line.route')}</h2>
+            <p id="crtm-map-status" class="mt-0.5 text-xs font-medium text-ink-3" role="status">
+              <span class="sr-only">{tr('line.loadingRoute')}</span>
+              <span class="inline-block h-3 w-44 max-w-full animate-pulse rounded bg-surface-2" aria-hidden="true" />
+            </p>
+
+            <div id="crtm-directions" role="group" aria-label={tr('line.directionAria')} class="dir-tabs mt-3">
+              <button type="button" class="dir-btn" data-direction="both" aria-pressed="true">
+                {tr('line.bothDirections')}
+              </button>
+              {mapDirections.map((d, i) => (
+                <button type="button" class="dir-btn" data-direction={d.key} aria-pressed="false">
+                  <span class="size-2 shrink-0 rounded-full" style={`background:var(--dir-${i === 0 ? 'a' : 'b'})`} aria-hidden="true" />
+                  {displayStopName(d.headsign)}
+                </button>
+              ))}
+            </div>
+
+            <div
+              id="crtm-map"
+              class="mt-3 h-[calc(100dvh-20rem)] min-h-96 overflow-hidden rounded-lg border border-line bg-surface-2 shadow-xs"
+              aria-label={tr('line.mapAria')}
+            >
+            </div>
+          </section>
+        )}
+
+        {directions && directions.length > 0 && directions.some((d) => d.stops.length > 0) && (
+          <section class="mt-8" aria-label={tr('line.stopsAria')}>
+            <h2 class="text-lg font-bold tracking-tight">{tr('line.stops')}</h2>
+            <p class="mt-0.5 text-xs text-ink-3">
+              {noSchedule ? tr('lineCrtm.stopsNoteNoSchedule') : tr('lineCrtm.stopsNote')} · © Consorcio Regional de Transportes de Madrid (CRTM){detail.network === 'cercanias' && ` · ${tr('crtm.renfeAttribution')}`}
+            </p>
+            <div class="mt-3 grid gap-4 lg:grid-cols-2">
+              {directions.filter((d) => d.stops.length > 0).map((dir) => {
+                return (
+                  <div class="overflow-hidden rounded-xl border border-line bg-surface shadow-xs" data-diagram={`d${dir.id}`}>
+                    <div
+                      class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b border-line px-4 py-3"
+                      style={`background:color-mix(in oklab, ${tone} 8%, var(--color-surface))`}
+                    >
+                      <h3 class="flex min-w-0 items-center gap-2 text-sm font-semibold text-ink">
+                        <span class="size-2 shrink-0 rounded-full" style={`background:${tone}`} aria-hidden="true" />
+                        <span class="truncate">{displayStopName(dir.headsign)}</span>
+                      </h3>
+                      <span class="shrink-0 text-xs font-medium tabular-nums text-ink-3">{tN(locale, dir.stops.length, 'stop.count')}</span>
+                    </div>
+                    <ol class="px-3 py-2">
+                      {dir.stops.map((s, i) => {
+                        const isFirst = i === 0;
+                        const isLast = i === dir.stops.length - 1;
+                        const isEnd = isFirst || isLast;
+                        return (
+                          <li>
+                            <a
+                              href={href(`/parada/crtm/${s.code}`, locale)}
+                              class="group relative flex items-center gap-3 rounded-md py-1.5 pr-2 transition hover:bg-surface-2 focus-ring"
+                            >
+                              {!isFirst && (
+                                <span
+                                  class="pointer-events-none absolute left-[13px] top-0 h-1/2 w-[3px] -translate-x-1/2"
+                                  style={`background:color-mix(in oklab, ${tone} 45%, var(--color-line))`}
+                                  aria-hidden="true"
+                                />
+                              )}
+                              {!isLast && (
+                                <span
+                                  class="pointer-events-none absolute bottom-0 left-[13px] top-1/2 w-[3px] -translate-x-1/2"
+                                  style={`background:color-mix(in oklab, ${tone} 45%, var(--color-line))`}
+                                  aria-hidden="true"
+                                />
+                              )}
+                              <span class="relative grid size-[26px] shrink-0 place-items-center" aria-hidden="true">
+                                <span
+                                  class:list={['rounded-full transition-all', isEnd ? 'size-[15px]' : 'size-2.5 group-hover:size-3']}
+                                  style={
+                                    isEnd
+                                      ? `background:${tone};box-shadow:0 0 0 3px var(--color-surface)`
+                                      : `background:var(--color-surface);box-shadow:inset 0 0 0 3px ${tone}, 0 0 0 3px var(--color-surface)`
+                                  }
+                                />
+                              </span>
+                              <span class="min-w-0 flex-1 py-0.5">
+                                <span
+                                  class:list={[
+                                    'block truncate transition',
+                                    isEnd ? 'text-[15px] font-bold text-ink' : 'text-sm font-medium text-ink-2 group-hover:text-ink',
+                                  ]}
+                                >
+                                  {displayStopName(s.name)}
+                                </span>
+                              </span>
+                              <span class="shrink-0 rounded bg-surface-2 px-1.5 py-0.5 text-[11px] font-semibold tabular-nums text-ink-3 transition group-hover:bg-brand-soft group-hover:text-brand-ink">
+                                {s.code}
+                              </span>
+                            </a>
+                          </li>
+                        );
+                      })}
+                    </ol>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
+        {mapDirections.length > 0 && (
+          <script is:inline type="application/json" id="crtm-route-data" set:html={jsonForIsland({ directions: mapDirections })} />
+        )}
+      </div>
+    )
+  }
+</Layout>
+
+<style>
+  /* Los dos sentidos comparten el tono de red (--dir-a tal cual, --dir-b entintado hacia tinta),
+     declarados inline en el wrapper. Valen para pestañas y mapa, y se adaptan al tema oscuro.
+     Las pestañas (.dir-tabs/.dir-btn) viven en global.css, compartidas con /linea. */
+
+  /* El selector gobierna mapa Y diagrama: un solo control para todo el recorrido. */
+  .crtm-line-page[data-dir='d0'] [data-diagram='d1'],
+  .crtm-line-page[data-dir='d1'] [data-diagram='d0'] {
+    display: none;
+  }
+</style>
+
+<script>
+  import L from 'leaflet';
+  import { displayStopName } from '../../../lib/crtm';
+  import { escapeHtml, stopRefLabel, viewStopLinkHtml } from '../../../lib/cards';
+  import { clientLocale, t } from '../../../lib/i18n';
+
+  const locale = clientLocale();
+
+  interface MapDirection {
+    key: string;
+    headsign: string;
+    distanceM: number;
+    geometry: { type: 'MultiLineString'; coordinates: [number, number][][] };
+    stops: { code: string; name: string; lat: number; lon: number }[];
+  }
+
+  const pageEl = document.querySelector<HTMLElement>('.crtm-line-page');
+  const mapEl = document.getElementById('crtm-map');
+  const dataEl = document.getElementById('crtm-route-data');
+  const statusEl = document.getElementById('crtm-map-status');
+  const directionsEl = document.getElementById('crtm-directions');
+
+  if (pageEl && mapEl && dataEl && statusEl && directionsEl) {
+    const dirs = (JSON.parse(dataEl.textContent!) as { directions: MapDirection[] }).directions;
+    const dirButtons = Array.from(directionsEl.querySelectorAll<HTMLButtonElement>('.dir-btn'));
+
+    // Color de cada sentido leído del punto de su pestaña ya pintado: getComputedStyle resuelve
+    // la var/oklch a un color usabile y Leaflet lo escribe como atributo SVG, que no admite CSS vars.
+    const dirColor = (key: string, fallback: string): string => {
+      const dot = directionsEl.querySelector(`[data-direction="${key}"] span`);
+      return dot ? getComputedStyle(dot).backgroundColor : fallback;
+    };
+
+    const map = L.map(mapEl);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    }).addTo(map);
+
+    const layers = new Map<string, L.FeatureGroup>();
+    dirs.forEach((dir, i) => {
+      const color = dirColor(dir.key, i === 0 ? '#33628a' : '#5c4a6e');
+      const group = L.featureGroup();
+      // MultiLineString: L.geoJSON pinta un polyline por tramo (los huecos reales del shape quedan huecos)
+      L.geoJSON(dir.geometry as never, {
+        style: { color, weight: 5, opacity: 0.85 },
+      }).addTo(group);
+
+      for (const s of dir.stops) {
+        L.circleMarker([s.lat, s.lon], {
+          radius: 6,
+          color: '#ffffff',
+          weight: 2,
+          fillColor: color,
+          fillOpacity: 1,
+        })
+          .addTo(group)
+          .bindPopup(
+            `<strong>${escapeHtml(displayStopName(s.name))}</strong><br/>` +
+              `<span class="text-xs text-ink-3">${escapeHtml(stopRefLabel(locale, s.code))} · CRTM</span><br/>` +
+              viewStopLinkHtml(locale, 'crtm', s.code)
+          );
+      }
+      layers.set(dir.key, group);
+    });
+
+    function show(direction: string): void {
+      for (const [key, layer] of layers) {
+        if (direction === 'both' || direction === key) {
+          map.addLayer(layer);
+        } else {
+          map.removeLayer(layer);
+        }
+      }
+
+      const target = direction === 'both' ? L.featureGroup([...layers.values()]) : layers.get(direction)!;
+      const bounds = target.getBounds();
+      if (bounds.isValid()) {
+        map.fitBounds(bounds, { padding: [24, 24] });
+      }
+
+      pageEl!.dataset.dir = direction;
+      dirButtons.forEach((btn) => {
+        btn.setAttribute('aria-pressed', String(btn.dataset.direction === direction));
+      });
+    }
+
+    dirButtons.forEach((btn) => {
+      btn.addEventListener('click', () => show(btn.dataset.direction ?? 'both'));
+    });
+
+    show('both');
+    const km = (m: number): string => (m / 1000).toLocaleString(locale === 'en' ? 'en-GB' : 'es-ES', { maximumFractionDigits: 1 });
+    statusEl.textContent = dirs.map((d) => t(locale, 'lineCrtm.kmTowards', { km: km(d.distanceM), name: displayStopName(d.headsign) })).join(' · ');
+  }
+</script>

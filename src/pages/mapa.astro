@@ -1,0 +1,296 @@
+---
+import Layout from '../layouts/Layout.astro';
+import { translator } from '../lib/i18n';
+import 'leaflet/dist/leaflet.css';
+
+export const prerender = false;
+
+const locale = Astro.locals.locale ?? 'es';
+const tr = translator(locale);
+---
+
+<Layout wide title={tr('map.title')} description={tr('map.seoDescription')}>
+  <div class="flex flex-wrap items-center justify-between gap-x-3 gap-y-3">
+    <h1 class="text-xl font-bold tracking-tight">{tr('map.heading')}</h1>
+    <div class="flex gap-2">
+      <button
+        id="btn-locate"
+        type="button"
+        class="rounded-md border border-control-edge bg-surface px-3 py-2 text-sm font-semibold text-ink shadow-xs transition hover:bg-surface-2 active:bg-surface-2 disabled:pointer-events-none disabled:opacity-50 focus-ring"
+      >
+        {tr('map.locate')}
+      </button>
+      <button
+        id="btn-search-here"
+        type="button"
+        class="rounded-md bg-brand px-3 py-2 text-sm font-semibold text-on-brand shadow-xs transition hover:bg-brand-hover active:bg-brand-active disabled:pointer-events-none disabled:opacity-50 focus-ring"
+      >
+        {tr('map.searchHere')}
+      </button>
+    </div>
+  </div>
+
+  {/* Nodo de estado del mapa (role=status): vacío hasta que hay algo real que contar
+      (errores de geolocalización, "N paradas a menos de X m"); la instrucción inicial
+      duplicaba a los dos botones de arriba */}
+  <p id="map-status" class="mt-3 text-sm text-ink-2" role="status"></p>
+
+  <div
+    id="map"
+    class="mt-3 h-[calc(100dvh-16rem)] min-h-96 overflow-hidden rounded-lg border border-line bg-surface-2 shadow-xs"
+    aria-label={tr('map.mapAria')}
+  ></div>
+</Layout>
+
+<script>
+  import L from 'leaflet';
+  import { API_BASE_URL } from '../lib/config';
+  import { chipFallbackColors, displayStopName, isCercaniasStop, mlLineColors, trimMunicipality } from '../lib/crtm';
+  import { crtmLineColor, crtmLineColorInStop, ensureCrtmLineColors } from '../lib/crtmlinecolors';
+  import { escapeHtml, stopRefLabel, viewStopLinkHtml } from '../lib/cards';
+  import { clientLocale, t, tN } from '../lib/i18n';
+  import type { NearbyStop } from '../types/api';
+  import type { CrtmNearbyStop } from '../types/crtm';
+
+  const MADRID_CENTER: L.LatLngExpression = [40.4168, -3.7038];
+  const RADIUS_M = 500;
+  const locale = clientLocale();
+
+  const container = document.getElementById('map')!;
+  const status = document.getElementById('map-status')!;
+  const btnLocate = document.getElementById('btn-locate') as HTMLButtonElement | null;
+  const btnSearchHere = document.getElementById('btn-search-here') as HTMLButtonElement | null;
+
+  // Una sola carga de nearby en vuelo: la nueva aborta a la anterior (así una respuesta
+  // vieja no puede pisar los marcadores de una más fresca) y ambos botones se deshabilitan
+  let nearbyInFlight: AbortController | null = null;
+
+  function setNearbyBusy(busy: boolean): void {
+    if (btnLocate) btnLocate.disabled = busy;
+    if (btnSearchHere) btnSearchHere.disabled = busy;
+  }
+
+  const map = L.map(container).setView(MADRID_CENTER, 15);
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+  }).addTo(map);
+
+  // Colores de línea CRTM para los chips de los popups (labels sin network en el
+  // nearby): una llamada a /crtm/lines cacheada — los popups que se abran después ya
+  // salen coloreados
+  void ensureCrtmLineColors();
+
+  const markers = L.layerGroup().addTo(map);
+  let userMarker: L.Marker | null = null;
+
+  const stopIcon = L.divIcon({
+    className: '',
+    html: '<span class="grid size-6 place-items-center rounded-full border-2 border-surface bg-brand shadow-md"></span>',
+    iconSize: [24, 24],
+    iconAnchor: [12, 12],
+    popupAnchor: [0, -12],
+  });
+
+  // CRTM: cuadrado redondeado con tono propio (el nearby no trae network; nunca el punto brand de la EMT ni linecolors)
+  const crtmStopIcon = L.divIcon({
+    className: '',
+    html: '<span class="block size-6 rounded-lg border-2 border-surface shadow-md" style="background:var(--color-crtm-inter)"></span>',
+    iconSize: [24, 24],
+    iconAnchor: [12, 12],
+    popupAnchor: [0, -12],
+  });
+
+  // Metro ligero (códigos 10_x): rombo con el color de su línea ML (fallback: tono de red ml)
+  function isMlStop(stop: CrtmNearbyStop): boolean {
+    return stop.code.startsWith('10_') || stop.lines.some((l) => /^ML\d/.test(l));
+  }
+
+  // Estaciones de metro (códigos 4_x): círculo con el tono de red metro
+  function isMetroStop(stop: CrtmNearbyStop): boolean {
+    return stop.code.startsWith('4_');
+  }
+
+  // Estaciones de Cercanías Renfe (códigos r_*): círculo con anillo en tono cercanías
+  // (el círculo plano ya lo usa el metro y el rombo el metro ligero)
+  const isCercanias = (stop: CrtmNearbyStop): boolean => isCercaniasStop(stop.code);
+
+  const cercaniasStopIcon = L.divIcon({
+    className: '',
+    html: '<span class="grid size-[22px] place-items-center rounded-full border-2 border-surface shadow-md" style="background:var(--color-crtm-cercanias)"><span class="size-[7px] rounded-full bg-surface"></span></span>',
+    iconSize: [26, 26],
+    iconAnchor: [13, 13],
+    popupAnchor: [0, -13],
+  });
+
+  const metroStopIcon = L.divIcon({
+    className: '',
+    html: '<span class="block size-[22px] rounded-full border-2 border-surface shadow-md" style="background:var(--color-crtm-metro)"></span>',
+    iconSize: [26, 26],
+    iconAnchor: [13, 13],
+    popupAnchor: [0, -13],
+  });
+
+  function mlStopIcon(stop: CrtmNearbyStop): L.DivIcon {
+    const label = stop.lines.find((l) => /^ML\d/.test(l));
+    const color = (label ? mlLineColors(label) : null)?.color ?? 'var(--color-crtm-ml)';
+    return L.divIcon({
+      className: '',
+      html: `<span class="block size-[18px] rotate-45 rounded-[5px] border-2 border-surface shadow-md" style="background:${color}"></span>`,
+      iconSize: [26, 26],
+      iconAnchor: [13, 13],
+      popupAnchor: [0, -13],
+    });
+  }
+
+  function lineChips(lines: string[], metro: boolean, stopCode?: string, municipality?: string | null): string {
+    return lines
+      .map((l) => {
+        // ML y cercanías por label (únicos en toda la red); el color de metro solo en
+        // estaciones de metro (los labels colisionan con urbanos); el resto, color
+        // oficial por label de la caché de /crtm/lines (bus uniforme por red incluido);
+        // los ambiguos ('1' = M1 y urbana) se desambiguan por municipio/código de la parada
+        const known =
+          crtmLineColor(l) ??
+          chipFallbackColors(l, metro ? 'metro' : null) ??
+          crtmLineColorInStop(l, { stopCode, municipality });
+        const style = known ? ` style="background:${known.color};color:${known.textColor}"` : '';
+        const cls = known ? 'rounded px-1 text-xs font-bold' : 'rounded border border-line bg-surface-2 px-1 text-xs font-bold text-ink-2';
+        return `<span class="${cls}"${style}>${escapeHtml(l)}</span>`;
+      })
+      .join(' ');
+  }
+
+  function emtPopup(stop: NearbyStop): string {
+    return (
+      `<strong>${escapeHtml(stop.name)}</strong><br/>` +
+      `<span class="text-xs text-ink-3">${escapeHtml(stopRefLabel(locale, stop.stopId))} · ${t(locale, 'map.away', { m: stop.distanceM })}</span><br/>` +
+      `<span class="mt-1 inline-flex flex-wrap gap-1">${lineChips(stop.lines, false)}</span><br/>` +
+      viewStopLinkHtml(locale, 'emt', stop.stopId)
+    );
+  }
+
+  function crtmPopup(stop: CrtmNearbyStop): string {
+    // El municipio llega a null en parte de las paradas (estaciones de metro) y la zona
+    // es null en las estaciones de cercanías (el feed Renfe no trae zone_id): solo entra
+    // en la línea lo que existe, para no dejar separadores "· ·" colgando
+    const muni = trimMunicipality(stop.municipality);
+    const meta = [
+      escapeHtml(stopRefLabel(locale, stop.code)),
+      muni,
+      stop.zone ? escapeHtml(t(locale, 'zone.label', { zone: stop.zone })) : '',
+      t(locale, 'map.away', { m: stop.distanceM }),
+    ]
+      .filter((part) => part !== '')
+      .join(' · ');
+    return (
+      `<strong>${escapeHtml(displayStopName(stop.name))}</strong><br/>` +
+      `<span class="text-xs text-ink-3">${meta}</span><br/>` +
+      `<span class="mt-1 inline-flex flex-wrap gap-1">${lineChips(stop.lines, isMetroStop(stop), stop.code, stop.municipality)}</span><br/>` +
+      viewStopLinkHtml(locale, 'crtm', stop.code)
+    );
+  }
+
+  interface NearbyBody<TStop> {
+    status: string;
+    data?: { count: number; stops: TStop[] };
+  }
+
+  function loadNearby(lat: number, lon: number): void {
+    nearbyInFlight?.abort();
+    const controller = new AbortController();
+    nearbyInFlight = controller;
+    setNearbyBusy(true);
+    status.textContent = t(locale, 'map.searching');
+
+    // 5 decimales (~1 m): unas coordenadas crudas hacen la query única en cada pulsación
+    // y el Cache-Control público del CDN de nearby no acierta nunca
+    const qLat = lat.toFixed(5);
+    const qLon = lon.toFixed(5);
+    const emtFetch = fetch(`${API_BASE_URL}/stops/nearby?lat=${qLat}&lon=${qLon}&radius=${RADIUS_M}`, { signal: controller.signal }).then(
+      (res) => res.json() as Promise<NearbyBody<NearbyStop>>
+    );
+    const crtmFetch = fetch(`${API_BASE_URL}/crtm/stops/nearby?lat=${qLat}&lon=${qLon}&radius=${RADIUS_M}`, { signal: controller.signal }).then(
+      (res) => res.json() as Promise<NearbyBody<CrtmNearbyStop>>
+    );
+
+    void Promise.allSettled([emtFetch, crtmFetch]).then(([emt, crtm]) => {
+      if (controller.signal.aborted) return;
+      setNearbyBusy(false);
+      const emtStops = emt.status === 'fulfilled' && emt.value.status !== 'error' && emt.value.data ? emt.value.data.stops : null;
+      const crtmStops = crtm.status === 'fulfilled' && crtm.value.status !== 'error' && crtm.value.data ? crtm.value.data.stops : null;
+
+      if (!emtStops && !crtmStops) {
+        status.textContent = t(locale, 'map.loadError');
+        return;
+      }
+
+      markers.clearLayers();
+
+      if (emtStops) {
+        for (const stop of emtStops) {
+          L.marker([stop.coordinates.latitude, stop.coordinates.longitude], { icon: stopIcon }).bindPopup(emtPopup(stop)).addTo(markers);
+        }
+      }
+      if (crtmStops) {
+        for (const stop of crtmStops) {
+          const icon = isMlStop(stop) ? mlStopIcon(stop) : isMetroStop(stop) ? metroStopIcon : isCercanias(stop) ? cercaniasStopIcon : crtmStopIcon;
+          L.marker([stop.lat, stop.lon], { icon }).bindPopup(crtmPopup(stop)).addTo(markers);
+        }
+      }
+
+      // El nearby CRTM mezcla bus, metro ligero, metro y cercanías: se desglosa el conteo de cada red
+      const mlCount = crtmStops ? crtmStops.filter(isMlStop).length : 0;
+      const metroCount = crtmStops ? crtmStops.filter(isMetroStop).length : 0;
+      const cercaniasCount = crtmStops ? crtmStops.filter(isCercanias).length : 0;
+      const parts = [emtStops ? t(locale, 'map.emtCount', { n: emtStops.length }) : t(locale, 'map.emtUnavailable')];
+      if (crtmStops) {
+        const busCount = crtmStops.length - mlCount - metroCount - cercaniasCount;
+        parts.push(tN(locale, busCount, 'map.crtmBusCount', { n: busCount }));
+        if (mlCount > 0) parts.push(tN(locale, mlCount, 'map.mlCount', { n: mlCount }));
+        if (metroCount > 0) parts.push(tN(locale, metroCount, 'map.metroCount', { n: metroCount }));
+        if (cercaniasCount > 0) parts.push(tN(locale, cercaniasCount, 'map.cercaniasCount', { n: cercaniasCount }));
+      } else {
+        parts.push(t(locale, 'map.crtmUnavailable'));
+      }
+      status.textContent = `${parts.join(' · ')} ${t(locale, 'map.withinRadius', { m: RADIUS_M })}`;
+    });
+  }
+
+  function showUserPosition(lat: number, lon: number): void {
+    if (userMarker) {
+      userMarker.setLatLng([lat, lon]);
+    } else {
+      userMarker = L.marker([lat, lon], {
+        icon: L.divIcon({
+          className: '',
+          html: '<span class="grid size-5 place-items-center rounded-full border-2 border-surface bg-ink shadow-md"><span class="size-1.5 rounded-full bg-surface"></span></span>',
+          iconSize: [20, 20],
+          iconAnchor: [10, 10],
+        }),
+      }).addTo(map);
+    }
+    map.setView([lat, lon], 16);
+    loadNearby(lat, lon);
+  }
+
+  btnLocate?.addEventListener('click', () => {
+    if (!('geolocation' in navigator)) {
+      status.textContent = t(locale, 'map.noGeolocation');
+      return;
+    }
+    status.textContent = t(locale, 'map.locating');
+    navigator.geolocation.getCurrentPosition(
+      (pos) => showUserPosition(pos.coords.latitude, pos.coords.longitude),
+      () => {
+        status.textContent = t(locale, 'map.locationDenied');
+      },
+      { enableHighAccuracy: true, timeout: 10_000, maximumAge: 30_000 }
+    );
+  });
+
+  btnSearchHere?.addEventListener('click', () => {
+    const { lat, lng } = map.getCenter();
+    loadNearby(lat, lng);
+  });
+</script>

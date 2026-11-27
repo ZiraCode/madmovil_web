@@ -1,0 +1,593 @@
+---
+// Tablón de llegadas en tiempo real de TODAS las paradas CRTM (/parada/crtm): estaciones
+// r_* con el GTFS-RT oficial de Renfe (retrasos, cancelaciones, vía, refuerzos) y
+// bus/ML/metro con el SAE del widget oficial del CRTM. Patrón mixto: el markup y la fila
+// son del antiguo DeparturesBoard (ETA_ROW, tags bajo el destino, separador de madrugada)
+// y el esqueleto de refresco del ArrivalsBoard EMT (auto-refresh 30 s pausado con la
+// pestaña oculta + botón manual, re-render completo de filas desde el fetch). La fuente
+// puede caer: el server degrada a tablón teórico con realtime.available false → pill
+// "Programado" y banner warn, nunca error. HISTÉRESIS: un snapshot degradado PUNTUAL no
+// bascula — las filas RT actuales siguen siendo la mejor información durante 3 min (la
+// señal available fluctúa por snapshot y por isolate del server).
+// Diferencias por red: andén/retraso/nº de tren SOLO en r_*; en el resto cada item trae
+// network (badge de red: los intercambiadores modo 10 MEZCLAN líneas de metro y ML con
+// labels duplicados entre redes), lineName (título del chip) y ±vehicle (SAE).
+import { ETA_ROW, ETA_ROW_GROUP, LIST_CLASS, ROW_CLASS } from '../lib/cards';
+import { cercaniasLineColors, chipFallbackColors, displayStopName, isCercaniasStop, lineColorChipStyle, networkLabel } from '../lib/crtm';
+import { departureEtaLabel, isoTimeLabel } from '../lib/departures';
+import { t, translator } from '../lib/i18n';
+import NoScheduleNotice from './NoScheduleNotice.astro';
+import type { CrtmArrivalItem, CrtmNetwork, CrtmStopArrivals } from '../types/crtm';
+
+interface Props {
+  stopCode: string;
+  // W3 (auditoría CPU 2026-11-24): sin llegadas SSR (respuesta no-store: 0 caché y
+  // fetches al SAE/Renfe por cada crawler); el tablón se llena client-side al montar con
+  // `loading`. El resto de props se conservan para datos prefijados si hicieran falta
+  initial?: CrtmArrivalItem[];
+  windowMin: number;
+  realtime?: CrtmStopArrivals['realtime'];
+  initialError?: string | null;
+  noScheduleData?: CrtmStopArrivals['noScheduleData'] | null;
+  // label → red de LAS líneas de esta parada (resuelto por la página vía /crtm/lines):
+  // los items del widget pueden llegar SIN network en vivo y con él el chip SSR ya
+  // sale con su color de línea (bus uniforme por red incluido) en vez de tinta neutra
+  lineNetworks?: Record<string, CrtmNetwork>;
+  loading?: boolean;
+}
+
+const { stopCode, initial = [], windowMin, realtime = { available: false }, initialError = null, noScheduleData = null, lineNetworks, loading = false } = Astro.props;
+
+const locale = Astro.locals.locale ?? 'es';
+const tr = translator(locale);
+const isCercanias = isCercaniasStop(stopCode);
+
+// El endpoint de arrivals sirve ventanas de 10-180 min (nada de 240/360 del schedule)
+const WINDOW_OPTIONS = [30, 60, 120, 180];
+
+function windowLabel(w: number): string {
+  return w < 60 ? `${w} min` : `${w / 60} h`;
+}
+
+// Chip de línea: r_* → color oficial C1–C10; resto → color oficial por red (la del
+// item o la de la línea en ESTA parada, para items del widget sin network) o tono de
+// red vía data-network; sin ninguna, tinta neutra
+function chipStyle(d: CrtmArrivalItem): string | undefined {
+  if (isCercanias) {
+    const known = d.line ? cercaniasLineColors(d.line) : null;
+    return known ? lineColorChipStyle(known.color) : undefined;
+  }
+  const network = d.network ?? (d.line ? lineNetworks?.[d.line] : undefined) ?? null;
+  const known = chipFallbackColors(d.line ?? '', network);
+  return known ? `background:${known.color};color:${known.textColor}` : undefined;
+}
+
+function chipNetwork(d: CrtmArrivalItem): string | undefined {
+  if (isCercanias) return 'cercanias';
+  return d.network ?? (d.line ? lineNetworks?.[d.line] : undefined);
+}
+
+// Intercambiador con redes mezcladas (p. ej. Pinar 10_1 = ML1 + L1 + L4): el tag de red
+// distingue los labels duplicados; en una parada de una sola red sería ruido
+const networks = new Set(initial.map((d) => d.network).filter((n): n is NonNullable<typeof n> => Boolean(n)));
+const mixedNetworks = networks.size > 1;
+
+type TagTone = 'ok' | 'warn' | 'neutral' | 'danger' | 'brand';
+const TAG_CLASS: Record<TagTone, string> = {
+  ok: 'bg-ok-soft text-ok-ink',
+  warn: 'bg-warn-soft text-warn-ink',
+  neutral: 'bg-surface-2 text-ink-2',
+  danger: 'bg-danger-soft text-danger-ink',
+  brand: 'bg-brand-soft text-brand-ink',
+};
+
+// Estado de la expedición: r_* → cancelado > refuerzo > programado (sin RT) > retraso
+// (≥5 min warn, 1-4 min neutro) > en hora; resto → solo "Programado" cuando el SAE de SU
+// línea está caído (realtime por item, distinto del degradado global)
+function statusTag(d: CrtmArrivalItem): { label: string; tone: TagTone } | null {
+  if (d.canceled) return { label: tr('cercanias.cancelled'), tone: 'danger' };
+  if (d.added) return { label: tr('cercanias.extraService'), tone: 'brand' };
+  if (!d.realtime) return { label: tr('departures.scheduled'), tone: 'neutral' };
+  if (!isCercanias) return null;
+  const delay = d.delaySec ?? 0;
+  if (delay >= 60) return { label: t(locale, 'cercanias.delayed', { min: Math.round(delay / 60) }), tone: delay >= 300 ? 'warn' : 'neutral' };
+  return { label: tr('cercanias.onTime'), tone: 'ok' };
+}
+
+function destOf(d: CrtmArrivalItem): string {
+  if (d.dest) return displayStopName(d.dest);
+  if (isCercanias) return tr('cercanias.specialService');
+  return d.lineName ?? '—';
+}
+---
+
+<section id="crtm-arrivals" data-stop-code={stopCode} data-window={windowMin} data-live={realtime.available ? 'true' : 'false'} data-loading={loading ? 'true' : 'false'} data-line-networks={lineNetworks ? JSON.stringify(lineNetworks) : undefined} class="mt-7" aria-label={tr(isCercanias ? 'cercanias.aria' : 'crtmRt.aria')}>
+  {/* Cabecera pegajosa en escritorio con la misma aritmética de ArrivalsBoard:
+      la lista pasa de 2000 px y el título + estado + botón son lo único que identifica las horas */}
+  <div class="mb-2.5 flex items-center gap-2 lg:sticky lg:top-(--mm-sticky-bar) lg:z-10 lg:-mt-2 lg:mb-0 lg:bg-page/85 lg:pt-2 lg:pb-2.5 lg:backdrop-blur-md">
+    <h2 class="flex-1 text-[17px] font-bold tracking-tight">{tr(isCercanias ? 'cercanias.heading' : 'crtmRt.heading')}</h2>
+    <span
+      id="crtm-rt-mode"
+      class:list={[
+        'inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-semibold',
+        realtime.available || loading ? 'bg-ok-soft text-ok-ink' : 'bg-surface-2 text-ink-2',
+      ]}
+    >
+      <span data-mode-live hidden={!(realtime.available || loading)} class="inline-flex items-center gap-1.5">
+        <span class="size-1.5 shrink-0 animate-pulse rounded-full bg-ok" aria-hidden="true"></span>
+        {tr('cercanias.live')}
+      </span>
+      <span data-mode-sched hidden={realtime.available || loading} class="inline-flex items-center gap-1.5">
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          class="size-3"
+          aria-hidden="true"
+        >
+          <circle cx="12" cy="12" r="10"></circle>
+          <path d="M12 6v6l4 2"></path>
+        </svg>
+        {tr('departures.scheduled')}
+      </span>
+    </span>
+    <button
+      id="crtm-rt-refresh"
+      type="button"
+      title={tr('arrivals.refresh')}
+      class="relative grid size-7 shrink-0 place-items-center rounded-lg border border-control-edge bg-surface text-ink-2 shadow-xs transition hover:bg-surface-2 hover:text-ink active:bg-surface-2 disabled:pointer-events-none disabled:opacity-50 before:absolute before:-inset-2 before:content-[''] focus-ring"
+    >
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        class="size-3.5"
+        aria-hidden="true"
+      >
+        <path d="M20 11a8 8 0 1 0-2.3 5.6"></path>
+        <path d="M20 4v7h-7"></path>
+      </svg>
+      <span class="sr-only">{tr('arrivals.refresh')}</span>
+    </button>
+  </div>
+
+  {
+    !noScheduleData && (
+      <div class="mb-3 flex flex-wrap items-center gap-1.5" role="group" aria-label={tr('departures.windowAria')}>
+        <span class="mr-0.5 text-[11px] font-semibold uppercase tracking-[0.1em] text-ink-3">{tr('departures.window')}</span>
+        {WINDOW_OPTIONS.map((w) => (
+          <a
+            href={`?window=${w}`}
+            aria-current={w === windowMin ? 'page' : undefined}
+            class:list={[
+              'rounded-full px-2.5 py-1 text-[11.5px] font-semibold tabular-nums transition focus-ring',
+              w === windowMin
+                ? 'bg-brand text-on-brand shadow-xs'
+                : 'border border-control-edge bg-surface text-ink-2 shadow-xs hover:bg-surface-2 hover:text-ink active:bg-surface-2',
+            ]}
+          >
+            {windowLabel(w)}
+          </a>
+        ))}
+      </div>
+    )
+  }
+
+  {/* Fuente RT caída o congelada: el server sirve el tablón TEÓRICO y available false (no es error) */}
+  <p
+    id="crtm-rt-warn"
+    hidden={realtime.available || loading}
+    class="mb-3 flex items-start gap-3 rounded-xl border border-warn bg-warn-soft px-4 py-3 text-sm font-medium text-warn-ink"
+    role="status"
+  >
+    <span class="mt-px grid size-5 shrink-0 place-items-center rounded-full bg-warn text-[11px] font-bold text-page" aria-hidden="true">
+      !
+    </span>
+    <span data-warn-text>{tr(isCercanias ? 'cercanias.rtUnavailable' : 'crtmRt.rtUnavailable')}</span>
+  </p>
+
+  {
+    noScheduleData ? (
+      <NoScheduleNotice calendarEnd={noScheduleData.calendarEnd} feedVersions={noScheduleData.feedVersions} note={t(locale, 'crtm.noScheduleStopNote')} />
+    ) : initialError ? (
+      <p
+        class="flex items-start gap-3 rounded-xl border border-warn bg-warn-soft px-4 py-3 text-sm font-medium text-warn-ink"
+        role="alert"
+      >
+        <span class="mt-px grid size-5 shrink-0 place-items-center rounded-full bg-warn text-[11px] font-bold text-page" aria-hidden="true">
+          !
+        </span>
+        <span>{initialError}</span>
+      </p>
+    ) : loading && initial.length === 0 ? (
+      <p id="crtm-rt-loading" role="status" class="rounded-xl border border-line bg-surface px-6 py-8 text-center shadow-xs">
+        <span class="mt-1 block animate-pulse text-sm text-ink-3">{tr('status.updating')}</span>
+      </p>
+    ) : initial.length === 0 ? (
+      <p class="rounded-xl border border-line bg-surface px-6 py-8 text-center shadow-xs">
+        <span class="block font-semibold text-ink">{t(locale, isCercanias ? 'cercanias.emptyTitle' : 'crtmRt.emptyTitle', { h: windowLabel(windowMin) })}</span>
+        <span class="mt-1 block text-sm text-ink-3">{tr(isCercanias ? 'cercanias.emptyBody' : 'crtmRt.emptyBody')}</span>
+        {windowMin < 180 && (
+          <a
+            href="?window=180"
+            class="mt-3 inline-block rounded-lg border border-control-edge bg-surface px-3 py-1.5 text-[13px] font-semibold text-ink shadow-xs transition hover:bg-surface-2 focus-ring"
+          >
+            {tr('cercanias.view3h')}
+          </a>
+        )}
+      </p>
+    ) : (
+      <ul id="crtm-rt-list" class={LIST_CLASS}>
+        {initial.map((d, i) => (
+          <Fragment>
+            {(d.dayOffset ?? 0) === 1 && (initial[i - 1]?.dayOffset ?? 0) !== 1 && (
+              <li class="bg-surface-2 px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.12em] text-ink-3">
+                {tr('departures.earlyMorningService')}
+              </li>
+            )}
+            <li class:list={[ROW_CLASS, d.canceled && 'opacity-60']}>
+              <span class={ETA_ROW_GROUP}>
+                <span
+                  class:list={[
+                    'crtm-badge grid h-7 min-w-[34px] shrink-0 place-items-center rounded-md px-1.5 text-[13px] font-bold tabular-nums',
+                    !chipNetwork(d) && !chipStyle(d) && 'bg-ink text-surface',
+                  ]}
+                  data-network={chipNetwork(d)}
+                  style={chipStyle(d)}
+                  title={d.lineName}
+                >
+                  {d.line ?? '—'}
+                </span>
+                <span class="min-w-0 flex-1">
+                  <span class="block break-words text-[13.5px] font-semibold text-ink">{destOf(d)}</span>
+                  {(statusTag(d) || (!isCercanias && mixedNetworks && d.network) || d.platform || d.accessible || d.vehicle) && (
+                    <span class="mt-1 flex flex-wrap items-center gap-1.5">
+                      {statusTag(d) && (
+                        <span class={`rounded-full px-1.5 py-0.5 text-[10px] font-bold leading-none ${TAG_CLASS[statusTag(d)!.tone]}`}>
+                          {statusTag(d)!.label}
+                        </span>
+                      )}
+                      {!isCercanias && mixedNetworks && d.network && (
+                        <span class="rounded-full bg-surface-2 px-1.5 py-0.5 text-[10px] font-bold leading-none text-ink-2">
+                          {networkLabel(locale, d.network)}
+                        </span>
+                      )}
+                      {d.platform && (
+                        <span class="rounded-full bg-surface-2 px-1.5 py-0.5 text-[10px] font-bold leading-none tabular-nums text-ink-2">
+                          {t(locale, 'cercanias.platform', { n: d.platform })}
+                        </span>
+                      )}
+                      {d.vehicle && (
+                        <span
+                          class="rounded-full bg-surface-2 px-1.5 py-0.5 text-[10px] font-bold leading-none tabular-nums text-ink-2"
+                          title={t(locale, 'crtmRt.vehicle', { id: d.vehicle })}
+                        >
+                          {d.vehicle}
+                        </span>
+                      )}
+                      {d.accessible && (
+                        <span class="text-[11px] leading-none text-ink-2" role="img" aria-label={tr('cercanias.accessible')} title={tr('cercanias.accessible')}>
+                          ♿
+                        </span>
+                      )}
+                    </span>
+                  )}
+                </span>
+              </span>
+              <span class="ml-auto shrink-0 text-right">
+                <span class="block text-[15px] font-bold leading-tight tabular-nums text-ink">{isoTimeLabel(locale, d.estimatedISO)}</span>
+                {!d.canceled && (
+                  <span
+                    class="block text-[11px] font-medium tabular-nums text-ink-3"
+                    data-crtm-iso={d.estimatedISO}
+                    data-day-offset={d.dayOffset ?? 0}
+                  >
+                    {departureEtaLabel(locale, d.estimatedISO, (d.dayOffset ?? 0) === 1 ? 1 : 0)}
+                  </span>
+                )}
+              </span>
+            </li>
+          </Fragment>
+        ))}
+      </ul>
+    )
+  }
+
+  <p id="crtm-rt-foot" class="mt-2 text-[11px] leading-relaxed text-ink-3">
+    {isCercanias ? `${tr('cercanias.renfeRtAttribution')} · ${tr('crtm.renfeAttribution')}` : `${tr('crtmRt.widgetAttribution')} · © Consorcio Regional de Transportes de Madrid (CRTM)`}
+  </p>
+</section>
+
+<script>
+  import { escapeHtml, ETA_ROW_GROUP, LIST_CLASS, ROW_CLASS } from '../lib/cards';
+  import { API_BASE_URL } from '../lib/config';
+  import { startBoardRefresh } from '../lib/boardrefresh';
+  import { cercaniasLineColors, chipFallbackColors, displayStopName, isCercaniasStop, lineColorChipStyle, networkLabel, noScheduleNoticeHtml } from '../lib/crtm';
+  import { crtmLineColor, ensureCrtmLineColors } from '../lib/crtmlinecolors';
+  import { departureEtaLabel, isoTimeLabel } from '../lib/departures';
+  import { clientLocale, t, type MessageKey } from '../lib/i18n';
+  import type { CrtmArrivalItem, CrtmStopArrivals } from '../types/crtm';
+
+  const locale = clientLocale();
+  const board = document.getElementById('crtm-arrivals');
+
+  if (board) {
+    const code = board.dataset.stopCode!;
+    // label → red de las líneas de esta parada (items del widget sin network en vivo)
+    const lineNetworks = (() => {
+      try {
+        return JSON.parse(board.dataset.lineNetworks ?? '{}') as Record<string, string>;
+      } catch {
+        return {};
+      }
+    })();
+    const isCercanias = isCercaniasStop(code);
+    const windowMin = board.dataset.window ?? '60';
+    const mode = document.getElementById('crtm-rt-mode');
+    const liveSpan = mode?.querySelector<HTMLElement>('[data-mode-live]');
+    const schedSpan = mode?.querySelector<HTMLElement>('[data-mode-sched]');
+    const rtWarn = document.getElementById('crtm-rt-warn');
+    const refreshButton = document.getElementById('crtm-rt-refresh');
+    const foot = document.getElementById('crtm-rt-foot');
+
+    const REFRESH_MS = 30_000;
+    const TAG_CLASS = {
+      ok: 'bg-ok-soft text-ok-ink',
+      warn: 'bg-warn-soft text-warn-ink',
+      neutral: 'bg-surface-2 text-ink-2',
+      danger: 'bg-danger-soft text-danger-ink',
+      brand: 'bg-brand-soft text-brand-ink',
+    } as const;
+
+    const MODE_BASE = 'inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-semibold';
+    const MODE_LIVE = 'bg-ok-soft text-ok-ink';
+    const MODE_SCHED = 'bg-surface-2 text-ink-2';
+
+    // Histéresis anti-bandazos: la señal available fluctúa por snapshot y por isolate del
+    // server (Renfe pausa su header.timestamp a ratos). Un refresco degradado PUNTUAL con
+    // RT reciente mantiene las filas actuales (la mejor información) y el estado "En directo"
+    const GRACE_MS = 3 * 60_000;
+    let lastLiveAt = board.dataset.live === 'true' ? Date.now() : 0;
+    let liveRendered = board.dataset.live === 'true';
+
+    // Fallos de refresco consecutivos: los aborts NO cuentan (boardrefresh aborta el
+    // refresh anterior a propósito). Tras 3 seguidos (~90 s con el auto-refresh de 30 s)
+    // el board retira el "En directo" y avisa de que las horas pueden estar desfasadas
+    const FAIL_STREAK_LIMIT = 3;
+    let failStreak = 0;
+
+    // El aviso warn cambia de texto según la causa: degradación del server (tablón
+    // teórico servido) o fallos de refresco seguidos (datos en pantalla sin actualizar)
+    function setWarnText(key: MessageKey): void {
+      const el = rtWarn?.querySelector<HTMLElement>('[data-warn-text]');
+      if (el) el.textContent = t(locale, key);
+    }
+
+    function windowLabel(w: number): string {
+      return w < 60 ? `${w} min` : `${w / 60} h`;
+    }
+
+    function chipAttr(d: CrtmArrivalItem): string {
+      let networkAttr = '';
+      let style = '';
+      if (isCercanias) {
+        networkAttr = ' data-network="cercanias"';
+        const known = d.line ? cercaniasLineColors(d.line) : null;
+        style = known ? ` style="${lineColorChipStyle(known.color)}"` : '';
+      } else {
+        const network = d.network ?? (d.line ? lineNetworks[d.line] : undefined) ?? null;
+        networkAttr = network ? ` data-network="${escapeHtml(network)}"` : '';
+        const known = chipFallbackColors(d.line ?? '', network) ?? crtmLineColor(d.line ?? '');
+        style = known ? ` style="background:${known.color};color:${known.textColor}"` : '';
+      }
+      return `${networkAttr}${style}${d.lineName ? ` title="${escapeHtml(d.lineName)}"` : ''}`;
+    }
+
+    function statusTag(d: CrtmArrivalItem): { label: string; tone: keyof typeof TAG_CLASS } | null {
+      if (d.canceled) return { label: t(locale, 'cercanias.cancelled'), tone: 'danger' };
+      if (d.added) return { label: t(locale, 'cercanias.extraService'), tone: 'brand' };
+      if (!d.realtime) return { label: t(locale, 'departures.scheduled'), tone: 'neutral' };
+      if (!isCercanias) return null;
+      const delay = d.delaySec ?? 0;
+      if (delay >= 60) return { label: t(locale, 'cercanias.delayed', { min: Math.round(delay / 60) }), tone: delay >= 300 ? 'warn' : 'neutral' };
+      return { label: t(locale, 'cercanias.onTime'), tone: 'ok' };
+    }
+
+    function destOf(d: CrtmArrivalItem): string {
+      if (d.dest) return displayStopName(d.dest);
+      if (isCercanias) return t(locale, 'cercanias.specialService');
+      return d.lineName ?? '—';
+    }
+
+    function itemHtml(d: CrtmArrivalItem, mixedNetworks: boolean): string {
+      const dayOffset: 0 | 1 = (d.dayOffset ?? 0) === 1 ? 1 : 0;
+      const st = statusTag(d);
+      const tags: string[] = [];
+      if (st) tags.push(`<span class="rounded-full px-1.5 py-0.5 text-[10px] font-bold leading-none ${TAG_CLASS[st.tone]}">${escapeHtml(st.label)}</span>`);
+      if (!isCercanias && mixedNetworks && d.network) {
+        tags.push(`<span class="rounded-full bg-surface-2 px-1.5 py-0.5 text-[10px] font-bold leading-none text-ink-2">${escapeHtml(networkLabel(locale, d.network))}</span>`);
+      }
+      if (d.platform) {
+        tags.push(
+          `<span class="rounded-full bg-surface-2 px-1.5 py-0.5 text-[10px] font-bold leading-none tabular-nums text-ink-2">${escapeHtml(t(locale, 'cercanias.platform', { n: d.platform }))}</span>`
+        );
+      }
+      if (d.vehicle) {
+        tags.push(
+          `<span class="rounded-full bg-surface-2 px-1.5 py-0.5 text-[10px] font-bold leading-none tabular-nums text-ink-2" title="${escapeHtml(t(locale, 'crtmRt.vehicle', { id: d.vehicle }))}">${escapeHtml(d.vehicle)}</span>`
+        );
+      }
+      if (d.accessible) {
+        tags.push(
+          `<span class="text-[11px] leading-none text-ink-2" role="img" aria-label="${escapeHtml(t(locale, 'cercanias.accessible'))}" title="${escapeHtml(t(locale, 'cercanias.accessible'))}">♿</span>`
+        );
+      }
+      const neutralChip = !isCercanias && !d.network && !chipFallbackColors(d.line ?? '', null);
+      return `
+        <li class="${ROW_CLASS}${d.canceled ? ' opacity-60' : ''}">
+          <span class="${ETA_ROW_GROUP}">
+            <span class="crtm-badge grid h-7 min-w-[34px] shrink-0 place-items-center rounded-md px-1.5 text-[13px] font-bold tabular-nums${neutralChip ? ' bg-ink text-surface' : ''}"${chipAttr(d)}>${escapeHtml(d.line ?? '—')}</span>
+            <span class="min-w-0 flex-1">
+              <span class="block break-words text-[13.5px] font-semibold text-ink">${escapeHtml(destOf(d))}</span>
+              ${tags.length > 0 ? `<span class="mt-1 flex flex-wrap items-center gap-1.5">${tags.join('')}</span>` : ''}
+            </span>
+          </span>
+          <span class="ml-auto shrink-0 text-right">
+            <span class="block text-[15px] font-bold leading-tight tabular-nums text-ink">${escapeHtml(isoTimeLabel(locale, d.estimatedISO))}</span>
+            ${
+              d.canceled
+                ? ''
+                : `<span class="block text-[11px] font-medium tabular-nums text-ink-3" data-crtm-iso="${escapeHtml(d.estimatedISO)}" data-day-offset="${dayOffset}">${escapeHtml(departureEtaLabel(locale, d.estimatedISO, dayOffset))}</span>`
+            }
+          </span>
+        </li>`;
+    }
+
+    function render(items: CrtmArrivalItem[]): void {
+      const target = document.getElementById('crtm-rt-list');
+      if (!target) return;
+      if (items.length === 0) {
+        const w = Number(windowMin);
+        target.innerHTML = `
+          <li data-empty="true" class="px-6 py-8 text-center">
+            <span class="block font-semibold text-ink">${escapeHtml(t(locale, isCercanias ? 'cercanias.emptyTitle' : 'crtmRt.emptyTitle', { h: windowLabel(w) }))}</span>
+            <span class="mt-1 block text-sm text-ink-3">${escapeHtml(t(locale, isCercanias ? 'cercanias.emptyBody' : 'crtmRt.emptyBody'))}</span>
+          </li>`;
+        return;
+      }
+      const networks = new Set(items.map((d) => d.network).filter((n): n is NonNullable<typeof n> => Boolean(n)));
+      const mixedNetworks = networks.size > 1;
+      const html: string[] = [];
+      items.forEach((d, i) => {
+        const offset: 0 | 1 = (d.dayOffset ?? 0) === 1 ? 1 : 0;
+        if (offset === 1 && (items[i - 1]?.dayOffset ?? 0) !== 1) {
+          html.push(`<li class="bg-surface-2 px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.12em] text-ink-3">${escapeHtml(t(locale, 'departures.earlyMorningService'))}</li>`);
+        }
+        html.push(itemHtml(d, mixedNetworks));
+      });
+      target.innerHTML = html.join('');
+    }
+
+    function setMode(available: boolean): void {
+      if (!mode || !liveSpan || !schedSpan) return;
+      mode.className = `${MODE_BASE} ${available ? MODE_LIVE : MODE_SCHED}`;
+      liveSpan.hidden = !available;
+      schedSpan.hidden = available;
+      if (rtWarn) rtWarn.hidden = available;
+    }
+
+    // Crea el <ul> de filas si aún no existe (SSR con error/empty/aviso que el fetch corrige)
+    function ensureList(): boolean {
+      if (document.getElementById('crtm-rt-list')) return true;
+      board?.querySelector(':scope > p[role="alert"], :scope > p.text-center, :scope > aside[role="note"]')?.remove();
+      // El placeholder de carga se retira POR ID: p[role="status"] casa antes con el
+      // banner warn oculto (#crtm-rt-warn, que llega antes en el DOM) y lo borraba a él
+      document.getElementById('crtm-rt-loading')?.remove();
+      const ul = document.createElement('ul');
+      ul.id = 'crtm-rt-list';
+      ul.className = LIST_CLASS;
+      board?.insertBefore(ul, foot ?? null);
+      return document.getElementById('crtm-rt-list') !== null;
+    }
+
+    function hasRows(): boolean {
+      return Boolean(document.querySelector('#crtm-rt-list li:not([data-empty])'));
+    }
+
+    // Estación de red en catálogo (feed de metro caducado) con la fuente RT caída: el server
+    // sirve count 0 + noScheduleData. Mismo marcado que el NoScheduleNotice del SSR
+    function noticeHtml(ns: NonNullable<CrtmStopArrivals['noScheduleData']>): string {
+      return noScheduleNoticeHtml(locale, ns, { id: 'crtm-rt-noschedule', note: t(locale, 'crtm.noScheduleStopNote') });
+    }
+
+    function showNotice(ns: NonNullable<CrtmStopArrivals['noScheduleData']>): void {
+      if (board?.querySelector(':scope > aside[role="note"]')) return;
+      board?.querySelector(':scope > p[role="alert"], :scope > p.text-center')?.remove();
+      document.getElementById('crtm-rt-loading')?.remove();
+      document.getElementById('crtm-rt-list')?.remove();
+      board?.insertBefore(document.createRange().createContextualFragment(noticeHtml(ns)), foot ?? null);
+      setMode(false);
+    }
+
+    function hideNotice(): void {
+      document.getElementById('crtm-rt-noschedule')?.remove();
+    }
+
+    function applyUpdate(items: CrtmArrivalItem[], available: boolean): void {
+      if (available) {
+        lastLiveAt = Date.now();
+        liveRendered = true;
+        setMode(true);
+        if (ensureList()) render(items);
+        tick();
+        return;
+      }
+      if (liveRendered && Date.now() - lastLiveAt < GRACE_MS) return;
+      liveRendered = false;
+      setWarnText(isCercanias ? 'cercanias.rtUnavailable' : 'crtmRt.rtUnavailable');
+      setMode(false);
+      if (ensureList()) render(items);
+      tick();
+    }
+
+    function tick(): void {
+      board?.querySelectorAll<HTMLElement>('[data-crtm-iso]').forEach((el) => {
+        if (el.dataset.dayOffset === '1') return;
+        const iso = el.dataset.crtmIso;
+        if (iso) el.textContent = departureEtaLabel(locale, iso);
+      });
+    }
+
+    async function refresh(signal: AbortSignal): Promise<void> {
+      try {
+        const res = await fetch(`${API_BASE_URL}/crtm/stops/arrivals/${encodeURIComponent(code)}?window=${windowMin}`, { signal });
+        const body = (await res.json()) as {
+          status: string;
+          data?: { departures: CrtmArrivalItem[]; realtime: { available: boolean }; noScheduleData?: CrtmStopArrivals['noScheduleData'] };
+        };
+        if (!res.ok || body.status === 'error' || !body.data) throw new Error('respuesta de error');
+        failStreak = 0;
+        // El placeholder de carga (W3) se retira con el primer dato llegue lo que llegue
+        // (filas, vacío o aviso de red en catálogo) — por ID, ver nota en ensureList
+        document.getElementById('crtm-rt-loading')?.remove();
+        if (body.data.noScheduleData) {
+          // Sin fuente RT y sin teórico que servir: si ya hay filas (la fuente vivía en el
+          // SSR), siguen siendo la mejor información — no se toca nada
+          if (hasRows()) return;
+          showNotice(body.data.noScheduleData);
+          return;
+        }
+        hideNotice();
+        applyUpdate(body.data.departures, body.data.realtime?.available ?? false);
+      } catch {
+        if (signal.aborted) return;
+        /* sin datos nuevos: las filas actuales siguen siendo la mejor información */
+        failStreak += 1;
+        if (failStreak >= FAIL_STREAK_LIMIT) {
+          setWarnText('crtmRt.refreshLost');
+          setMode(false);
+        }
+      }
+    }
+
+    startBoardRefresh({
+      refresh,
+      refreshButton,
+      refreshMs: REFRESH_MS,
+      tick,
+      tickMs: 30_000,
+      // SSR degradado (o copia degradada cacheada en edge) Y tablón sin datos SSR (W3):
+      // fetch inmediato en vez de esperar al primer ciclo de 30 s
+      refreshOnStart: board.dataset.live !== 'true' || board.dataset.loading === 'true',
+    });
+    // Colores por label para items del widget que lleguen SIN network en vivo (±): la
+    // caché de /crtm/lines se llena una vez y los refetches de 30 s ya pintan con ella
+    void ensureCrtmLineColors();
+  }
+</script>

@@ -1,0 +1,610 @@
+---
+import '../styles/global.css';
+import { href, stripLocalePrefix, translator, type MessageKey } from '../lib/i18n';
+
+interface Props {
+  title?: string;
+  description?: string;
+  /** Páginas-lienzo (mapa): ensancha el shell entero — cabecera, main y footer a la vez */
+  wide?: boolean;
+}
+
+const locale = Astro.locals.locale ?? 'es';
+const tr = translator(locale);
+
+const title = Astro.props.title ? `${Astro.props.title} · Madrid Movilidad` : tr('seo.defaultTitle');
+const description = Astro.props.description ?? tr('seo.defaultDescription');
+const wide = Astro.props.wide ?? false;
+const site = Astro.site ?? 'https://www.madmovil.es';
+// Astro.url.pathname es la ruta INTERNA (sin /en en SSR tras el rewrite): la URL pública
+// se reconstruye con href(). Las prerenderizadas EN (/en/404, legales) no pasan por el
+// rewrite, así que SU pathname conserva el prefijo: se quita antes para no duplicarlo
+const pathname = stripLocalePrefix(Astro.url.pathname);
+const canonical = new URL(href(pathname, locale), site);
+const ogImage = new URL('/og-image.png', site);
+const currentPath = pathname.replace(/\/+$/, '') || '/';
+
+// `tab: true` = pestaña propia en la barra inferior de móvil. Las demás caen en la hoja "Más"
+// (5 celdas: 4 pestañas + "Más"; añadir una sexta obliga a mover otra a la hoja, no a apretar la rejilla)
+const navLinks: { path: string; labelKey: MessageKey; tab: boolean; icon: string }[] = [
+  {
+    path: '/',
+    labelKey: 'nav.stops',
+    tab: true,
+    icon: '<path d="M8 6v6"/><path d="M15 6v6"/><path d="M2 12h19.6"/><path d="M18 18h3s.5-1.7.8-2.8c.1-.4.2-.8.2-1.2 0-.4-.1-.8-.2-1.2l-1.4-5C20.1 6.8 19.1 6 18 6H4a2 2 0 0 0-2 2v10h3"/><circle cx="7" cy="18" r="2"/><path d="M9 18h5"/><circle cx="16" cy="18" r="2"/>',
+  },
+  {
+    path: '/lineas',
+    labelKey: 'nav.lines',
+    tab: true,
+    icon: '<circle cx="6" cy="19" r="2"/><circle cx="18" cy="5" r="2"/><path d="M8 19h6a4 4 0 0 0 0-8H9a4 4 0 0 1 0-8h7"/>',
+  },
+  {
+    path: '/mapa',
+    labelKey: 'nav.map',
+    tab: true,
+    icon: '<path d="M15 10.5a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"/><path d="M19.5 10.5c0 7.142-7.5 11.25-7.5 11.25S4.5 17.642 4.5 10.5a7.5 7.5 0 1 1 15 0Z"/>',
+  },
+  {
+    path: '/favoritos',
+    labelKey: 'nav.favorites',
+    tab: true,
+    icon: '<path d="M11.48 3.499a.562.562 0 0 1 1.04 0l2.125 5.111a.562.562 0 0 0 .475.345l5.518.442c.499.04.701.663.321.988l-4.204 3.602a.562.562 0 0 0-.182.557l1.285 5.385a.562.562 0 0 1-.84.61l-4.725-2.885a.562.562 0 0 0-.586 0L6.982 20.54a.562.562 0 0 1-.84-.61l1.285-5.386a.562.562 0 0 0-.182-.557l-4.204-3.602a.562.562 0 0 1 .321-.988l5.518-.442a.562.562 0 0 0 .475-.345L11.48 3.5Z"/>',
+  },
+  {
+    path: '/incidencias',
+    labelKey: 'nav.incidents',
+    tab: false,
+    icon: '<path d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z"/>',
+  },
+];
+
+const isActive = (path: string): boolean => (path === '/' ? currentPath === '/' : currentPath.startsWith(path));
+
+const tabLinks = navLinks.filter((link) => link.tab);
+const sheetLinks = navLinks.filter((link) => !link.tab);
+const moreActive = sheetLinks.some((link) => isActive(link.path));
+
+// Switcher ES/EN: enlaces a la misma página en el otro locale (con su query), nombres siempre
+// EN su propio idioma. La preferencia se guarda en localStorage al navegar (script de abajo).
+const switchSearch = Astro.url.search;
+const switchHref = (target: 'es' | 'en'): string => href(pathname, target) + switchSearch;
+---
+
+<!doctype html>
+<html lang={locale}>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={canonical} />
+    {/* i18n: misma página en ambos locales (ES sin prefijo, EN en /en) */}
+    <link rel="alternate" hreflang="es" href={new URL(href(pathname, 'es'), site)} />
+    <link rel="alternate" hreflang="en" href={new URL(href(pathname, 'en'), site)} />
+    <link rel="alternate" hreflang="x-default" href={new URL(href(pathname, 'es'), site)} />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" href="/favicon.ico" sizes="48x48" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.json" />
+    <meta name="generator" content={Astro.generator} />
+    <meta name="theme-color" content="#faf7f2" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#211f1c" media="(prefers-color-scheme: dark)" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Madrid Movilidad" />
+    <meta property="og:locale" content={locale === 'en' ? 'en_GB' : 'es_ES'} />
+    <meta property="og:locale:alternate" content={locale === 'en' ? 'es_ES' : 'en_GB'} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content={ogImage} />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={ogImage} />
+    <link rel="preload" href="/fonts/public-sans-latin-var.woff2?v=1" as="font" type="font/woff2" crossorigin />
+    <script is:inline>
+      (function () {
+        var stored = null;
+        try {
+          stored = localStorage.getItem('madmovil:theme');
+        } catch (e) {
+          /* storage bloqueado: cae a prefers-color-scheme */
+        }
+        var dark = stored ? stored === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+        document.documentElement.classList.add(dark ? 'dark' : 'light');
+      })();
+    </script>
+  </head>
+  <body class:list={['min-h-dvh bg-page font-sans text-ink antialiased', wide && 'shell-wide']}>
+    {/* Skip link (WCAG 2.4.1): fixed al recibir foco para que salga en el viewport
+        también con la página scrolleada */}
+    <a
+      href="#main"
+      class="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-2 focus:z-50 focus:rounded-md focus:bg-ink focus:px-3 focus:py-2 focus:text-sm focus:font-semibold focus:text-page focus:shadow-md focus-ring"
+    >
+      {tr('a11y.skipToContent')}
+    </a>
+    {/* Cabecera: en móvil SOLO marca (logo + nombre). El nombre trunca y la marca lleva min-w-0,
+        nunca shrink-0: un nombre más largo se recorta, no empuja la página a la derecha */}
+    <header class="sticky top-0 z-20 border-b border-line bg-page/85 backdrop-blur-md">
+      <div class="mx-auto flex min-h-14 max-w-(--mm-shell) items-center justify-between gap-x-3 px-4 py-2">
+        <a
+          href={href('/', locale)}
+          class="flex min-w-0 items-center gap-2 rounded-md text-[15px] font-bold tracking-tight text-ink transition hover:text-brand-ink focus-ring"
+        >
+          <span class="grid size-7 shrink-0 place-items-center rounded-md bg-brand text-[13px] font-bold text-on-brand">M</span>
+          <span class="truncate">Madrid Movilidad</span>
+        </a>
+        {/* Nav, tema, idioma y cuenta solo en ≥sm; en móvil viven en la barra de pestañas y en la hoja "Más" */}
+        <div class="hidden items-center gap-1 sm:flex">
+          <nav class="flex items-center gap-1 text-sm" aria-label={tr('a11y.mainNav')}>
+            {
+              navLinks.map((link) => (
+                <a
+                  href={href(link.path, locale)}
+                  aria-current={isActive(link.path) ? 'page' : undefined}
+                  class="rounded-md px-2 py-1.5 font-medium text-ink-2 transition hover:bg-surface-2 hover:text-ink active:bg-surface-2 focus-ring"
+                >
+                  {tr(link.labelKey)}
+                </a>
+              ))
+            }
+          </nav>
+          {/* Switcher ES/EN: misma página, otro locale. Nombres siempre en su propio idioma */}
+          <div class="ml-1 flex shrink-0 gap-0.5 rounded-lg bg-surface-2 p-0.5" role="group" aria-label={tr('locale.switch')}>
+            <a
+              href={switchHref('es')}
+              hreflang="es"
+              lang="es"
+              data-locale-link="es"
+              aria-current={locale === 'es' ? 'true' : undefined}
+              class:list={[
+                'rounded-md px-2 py-1 text-[13px] font-semibold transition focus-ring',
+                locale === 'es' ? 'border border-control-edge bg-surface text-ink shadow-xs' : 'text-ink-2 hover:text-ink',
+              ]}
+            >
+              ES
+            </a>
+            <a
+              href={switchHref('en')}
+              hreflang="en"
+              lang="en"
+              data-locale-link="en"
+              aria-current={locale === 'en' ? 'true' : undefined}
+              class:list={[
+                'rounded-md px-2 py-1 text-[13px] font-semibold transition focus-ring',
+                locale === 'en' ? 'border border-control-edge bg-surface text-ink shadow-xs' : 'text-ink-2 hover:text-ink',
+              ]}
+            >
+              EN
+            </a>
+          </div>
+          <button
+            type="button"
+            id="theme-toggle"
+            aria-label={tr('theme.toggle')}
+            class="rounded-md p-1.5 text-ink-2 transition hover:bg-surface-2 hover:text-ink active:bg-surface-2 focus-ring"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke-width="1.5"
+              stroke="currentColor"
+              class="block size-5"
+              aria-hidden="true"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                d="M12 8a2.83 2.83 0 0 0 4 4 4 4 0 1 1-4-4"
+              />
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"
+              />
+            </svg>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    {/* Velo de la hoja "Más": decorativo (cerrar también con Escape y con el propio botón) */}
+    <div id="more-scrim" class="fixed inset-0 z-30 bg-scrim sm:hidden" aria-hidden="true"></div>
+
+    {/* Móvil (<sm): navegación en pestañas fijas abajo. La hoja crece hacia arriba desde este
+        mismo contenedor (grid-template-rows 0fr→1fr), así que nunca tapa a la barra ni hace falta
+        cuadrar su altura a mano */}
+    <div class="fixed inset-x-0 bottom-0 z-40 sm:hidden">
+      <div id="more-sheet">
+        <div class="mm-sheet-scroller">
+          <div class="mx-auto w-full max-w-(--mm-shell) px-3 pb-2">
+            <div class="rounded-2xl border border-line bg-surface p-2 shadow-lg">
+              <div class="mx-auto mb-1.5 h-1 w-9 rounded-full bg-line-strong" aria-hidden="true"></div>
+
+              {
+                sheetLinks.map((link) => {
+                  const active = isActive(link.path);
+                  return (
+                    <a
+                      href={href(link.path, locale)}
+                      aria-current={active ? 'page' : undefined}
+                      class:list={[
+                        'group flex items-center gap-3 rounded-xl px-2.5 py-2 transition hover:bg-surface-2 active:bg-surface-2 focus-ring',
+                        active ? 'text-ink' : 'text-ink-2',
+                      ]}
+                    >
+                      <span
+                        class:list={[
+                          'grid size-9 shrink-0 place-items-center rounded-lg transition',
+                          active ? 'bg-brand text-on-brand' : 'bg-brand-soft text-brand-ink',
+                        ]}
+                      >
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                          stroke-width="1.5"
+                          stroke="currentColor"
+                          class="size-5"
+                          aria-hidden="true"
+                          set:html={link.icon}
+                        />
+                      </span>
+                      <span class="flex-1 text-[15px] font-semibold">{tr(link.labelKey)}</span>
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        stroke-width="1.5"
+                        stroke="currentColor"
+                        class="size-4 shrink-0 text-ink-3 transition group-hover:translate-x-0.5"
+                        aria-hidden="true"
+                      >
+                        <path stroke-linecap="round" stroke-linejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" />
+                      </svg>
+                    </a>
+                  );
+                })
+              }
+
+              <div class="my-1.5 h-px bg-line"></div>
+
+              <div class="flex items-center gap-3 rounded-xl px-2.5 py-1.5">
+                <span class="grid size-9 shrink-0 place-items-center rounded-lg bg-brand-soft text-brand-ink">
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke-width="1.5"
+                    stroke="currentColor"
+                    class="size-5"
+                    aria-hidden="true"
+                  >
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      d="M12 3v2.25m6.364.386-1.591 1.591M21 12h-2.25m-.386 6.364-1.591-1.591M12 18.75V21m-4.773-4.227-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0Z"
+                    />
+                  </svg>
+                </span>
+                <span class="flex-1 text-[15px] font-semibold text-ink">{tr('theme.label')}</span>
+                <div class="flex shrink-0 gap-0.5 rounded-xl bg-surface-2 p-0.5" role="group" aria-label={tr('theme.label')}>
+                  <button
+                    type="button"
+                    data-theme-value="light"
+                    aria-pressed="false"
+                    class="grid min-h-11 place-items-center rounded-[0.625rem] px-3.5 text-[13px] font-semibold text-ink-2 transition focus-ring aria-pressed:bg-surface aria-pressed:text-ink aria-pressed:shadow-xs"
+                    >{tr('theme.light')}</button
+                  >
+                  <button
+                    type="button"
+                    data-theme-value="dark"
+                    aria-pressed="false"
+                    class="grid min-h-11 place-items-center rounded-[0.625rem] px-3.5 text-[13px] font-semibold text-ink-2 transition focus-ring aria-pressed:bg-surface aria-pressed:text-ink aria-pressed:shadow-xs"
+                    >{tr('theme.dark')}</button
+                  >
+                </div>
+              </div>
+
+              {/* Switcher de idioma en la hoja "Más" (móvil): mismo destino que el de la cabecera */}
+              <div class="flex items-center gap-3 rounded-xl px-2.5 py-1.5">
+                <span class="grid size-9 shrink-0 place-items-center rounded-lg bg-brand-soft text-brand-ink">
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke-width="1.5"
+                    stroke="currentColor"
+                    class="size-5"
+                    aria-hidden="true"
+                  >
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      d="m10.5 21 5.25-11.25L21 21m-9-3h7.5M3 5.621a48.474 48.474 0 0 1 6-.371m0 0c1.12 0 2.233.038 3.334.114M9 5.25V3m3.334 2.364C11.176 10.658 7.69 15.08 3 17.502m9.334-12.138c.896.061 1.785.147 2.666.257m-4.589 0M15.75 9a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"
+                    />
+                  </svg>
+                </span>
+                <span class="flex-1 text-[15px] font-semibold text-ink">{tr('locale.switch')}</span>
+                <div class="flex shrink-0 gap-0.5 rounded-xl bg-surface-2 p-0.5" role="group" aria-label={tr('locale.switch')}>
+                  <a
+                    href={switchHref('es')}
+                    hreflang="es"
+                    lang="es"
+                    data-locale-link="es"
+                    aria-current={locale === 'es' ? 'true' : undefined}
+                    class:list={[
+                      'grid min-h-11 place-items-center rounded-[0.625rem] px-3.5 text-[13px] font-semibold transition focus-ring',
+                      locale === 'es' ? 'border border-control-edge bg-surface text-ink shadow-xs' : 'text-ink-2 hover:text-ink',
+                    ]}
+                    >Español</a
+                  >
+                  <a
+                    href={switchHref('en')}
+                    hreflang="en"
+                    lang="en"
+                    data-locale-link="en"
+                    aria-current={locale === 'en' ? 'true' : undefined}
+                    class:list={[
+                      'grid min-h-11 place-items-center rounded-[0.625rem] px-3.5 text-[13px] font-semibold transition focus-ring',
+                      locale === 'en' ? 'border border-control-edge bg-surface text-ink shadow-xs' : 'text-ink-2 hover:text-ink',
+                    ]}
+                    >English</a
+                  >
+                </div>
+              </div>
+
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <nav class="border-t border-line bg-page/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-md" aria-label={tr('a11y.mainNav')}>
+        <div class="mx-auto grid max-w-(--mm-shell) grid-cols-5">
+          {
+            tabLinks.map((link) => {
+              const active = isActive(link.path);
+              return (
+                <a
+                  href={href(link.path, locale)}
+                  aria-current={active ? 'page' : undefined}
+                  class:list={[
+                    'flex min-h-15 flex-col items-center justify-center gap-1 rounded-lg px-1 py-1.5 transition active:bg-surface-2 focus-ring',
+                    active ? 'text-brand-ink' : 'text-ink-3',
+                  ]}
+                >
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke-width="1.6"
+                    stroke="currentColor"
+                    class="size-[22px]"
+                    aria-hidden="true"
+                    set:html={link.icon}
+                  />
+                  <span class:list={['text-[11px] leading-none', active ? 'font-bold' : 'font-semibold']}>{tr(link.labelKey)}</span>
+                </a>
+              );
+            })
+          }
+          <button
+            type="button"
+            id="more-toggle"
+            aria-expanded="false"
+            aria-controls="more-sheet"
+            class:list={[
+              'flex min-h-15 flex-col items-center justify-center gap-1 rounded-lg px-1 py-1.5 transition active:bg-surface-2 focus-ring',
+              moreActive ? 'text-brand-ink' : 'text-ink-3',
+            ]}
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke-width="1.6"
+              stroke="currentColor"
+              class="size-[22px]"
+              aria-hidden="true"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                d="M6.75 12a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0ZM12.75 12a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0ZM18.75 12a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Z"
+              />
+            </svg>
+            <span class:list={['text-[11px] leading-none', moreActive ? 'font-bold' : 'font-semibold']}>{tr('sheet.more')}</span>
+          </button>
+        </div>
+      </nav>
+    </div>
+
+    <style>
+      /* Misma técnica que el menú acordeón anterior: la altura se anima con grid-template-rows
+         y visibility saca la hoja del orden de tabulación cuando está cerrada */
+      #more-sheet {
+        display: grid;
+        grid-template-rows: 0fr;
+        visibility: hidden;
+        transition:
+          grid-template-rows 0.3s cubic-bezier(0.33, 1, 0.68, 1),
+          visibility 0s linear 0.3s;
+      }
+
+      #more-sheet.sheet-open {
+        grid-template-rows: 1fr;
+        visibility: visible;
+        transition-delay: 0s;
+      }
+
+      .mm-sheet-scroller {
+        overflow: hidden;
+        min-height: 0;
+      }
+
+      #more-scrim {
+        opacity: 0;
+        visibility: hidden;
+        transition:
+          opacity 0.25s ease,
+          visibility 0s linear 0.25s;
+      }
+
+      #more-scrim.sheet-open {
+        opacity: 1;
+        visibility: visible;
+        transition-delay: 0s;
+      }
+    </style>
+
+    <style is:global>
+      /* La barra de pestañas es fixed: hueco al final de la página para que no tape el footer.
+         3.8125rem = 60px de alto mínimo + 1px de borde superior */
+      @media (max-width: 639.98px) {
+        body {
+          padding-bottom: calc(3.8125rem + env(safe-area-inset-bottom));
+        }
+      }
+    </style>
+
+    <main id="main" class="mx-auto w-full max-w-(--mm-shell) px-4 py-6">
+      <slot />
+    </main>
+
+    <footer class="mx-auto max-w-(--mm-shell) px-4 pb-10 pt-6 text-center text-xs text-ink-3">
+      <p>{tr('footer.attribution')}</p>
+      <nav class="mt-3 flex flex-wrap items-center justify-center gap-x-2 gap-y-1" aria-label={tr('a11y.legalNav')}>
+        <a
+          href={href('/aviso-legal', locale)}
+          class="rounded underline-offset-2 transition hover:text-ink hover:underline focus-ring"
+          >{tr('legal.notice')}</a
+        >
+        <span aria-hidden="true">·</span>
+        <a
+          href={href('/privacidad', locale)}
+          class="rounded underline-offset-2 transition hover:text-ink hover:underline focus-ring"
+          >{tr('legal.privacy')}</a
+        >
+        <span aria-hidden="true">·</span>
+        <a
+          href={href('/cookies', locale)}
+          class="rounded underline-offset-2 transition hover:text-ink hover:underline focus-ring"
+          >{tr('legal.cookies')}</a
+        >
+        <span aria-hidden="true">·</span>
+        <a
+          href={href('/accesibilidad', locale)}
+          class="rounded underline-offset-2 transition hover:text-ink hover:underline focus-ring"
+          >{tr('legal.accessibility')}</a
+        >
+      </nav>
+    </footer>
+
+    <script>
+      const root = document.documentElement;
+      const toggle = document.getElementById('theme-toggle');
+      // Botón de icono en escritorio y segmentado Claro/Oscuro en la hoja "Más": mismo estado
+      const themeButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-theme-value]'));
+
+      function syncThemeControls(dark: boolean): void {
+        themeButtons.forEach((btn) => btn.setAttribute('aria-pressed', String((btn.dataset.themeValue === 'dark') === dark)));
+      }
+
+      function apply(dark: boolean): void {
+        root.classList.toggle('dark', dark);
+        root.classList.toggle('light', !dark);
+        syncThemeControls(dark);
+      }
+
+      function setTheme(dark: boolean): void {
+        try {
+          localStorage.setItem('madmovil:theme', dark ? 'dark' : 'light');
+        } catch {
+          /* storage bloqueado: el tema aplica igualmente en esta vista */
+        }
+        apply(dark);
+      }
+
+      toggle?.addEventListener('click', () => setTheme(!root.classList.contains('dark')));
+      themeButtons.forEach((btn) => btn.addEventListener('click', () => setTheme(btn.dataset.themeValue === 'dark')));
+
+      syncThemeControls(root.classList.contains('dark'));
+
+      // Sin preferencia guardada (o storage bloqueado) se sigue al sistema en vivo
+      let storedTheme: string | null = null;
+      try {
+        storedTheme = localStorage.getItem('madmovil:theme');
+      } catch {
+        /* storage bloqueado */
+      }
+      if (!storedTheme) {
+        matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => apply(e.matches));
+      }
+
+      // Switcher de idioma: la preferencia se guarda al navegar (solo estadística local —
+      // el locale SIEMPRE viene de la URL, nunca se usa para renderizar: el HTML es cacheable
+      // en el edge y no se puede condicionar al usuario)
+      document.querySelectorAll<HTMLAnchorElement>('[data-locale-link]').forEach((a) =>
+        a.addEventListener('click', () => {
+          try {
+            localStorage.setItem('madmovil:locale', a.dataset.localeLink ?? 'es');
+          } catch {
+            /* storage bloqueado: el enlace navega igualmente */
+          }
+        })
+      );
+
+      const moreToggle = document.getElementById('more-toggle');
+      const moreSheet = document.getElementById('more-sheet');
+      const moreScrim = document.getElementById('more-scrim');
+
+      if (moreToggle && moreSheet && moreScrim) {
+        const btn = moreToggle;
+        const panel = moreSheet;
+        const scrim = moreScrim;
+
+        function setSheet(open: boolean): void {
+          btn.setAttribute('aria-expanded', String(open));
+          panel.classList.toggle('sheet-open', open);
+          scrim.classList.toggle('sheet-open', open);
+        }
+
+        btn.addEventListener('click', () => setSheet(btn.getAttribute('aria-expanded') !== 'true'));
+        scrim.addEventListener('click', () => setSheet(false));
+        // Delegado: cualquier enlace de la hoja la cierra al navegar
+        panel.addEventListener('click', (e) => {
+          if ((e.target as HTMLElement | null)?.closest('a')) setSheet(false);
+        });
+        document.addEventListener('keydown', (e) => {
+          if (e.key === 'Escape' && btn.getAttribute('aria-expanded') === 'true') {
+            setSheet(false);
+            btn.focus();
+          }
+        });
+        const desktop = matchMedia('(min-width: 640px)');
+        desktop.addEventListener('change', () => {
+          if (desktop.matches) setSheet(false);
+        });
+      }
+    </script>
+
+    <script>
+      // Motor del vault de sincronización (F2): pull al abrir si hay código activo y
+      // push con debounce al modificar favoritos (evento 'favorites:changed'). No-op
+      // inmediato sin código: no toca red ni crypto en la mayoría de visitas.
+      import { initVaultSync } from '../lib/vault';
+      initVaultSync();
+    </script>
+
+    <script>
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/sw.js').catch(() => {});
+        });
+      }
+    </script>
+  </body>
+</html>

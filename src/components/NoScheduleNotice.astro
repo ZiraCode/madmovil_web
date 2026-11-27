@@ -1,0 +1,44 @@
+---
+// Aviso "modo catálogo" del CRTM: el feed de Metro está caducado y la línea/estación se
+// sirve SIN horarios oficiales (direcciones, estaciones y recorrido sí). Se pinta solo
+// cuando el API manda noSchedule/noScheduleData; si el CRTM republique el feed, este
+// componente deja de renderizarse sin cambios de código.
+import { gtfsDateLabel } from '../lib/crtm';
+import { t } from '../lib/i18n';
+
+interface Props {
+  calendarEnd?: string;
+  feedVersions?: string[];
+  note?: string;
+  class?: string;
+}
+
+const { calendarEnd, feedVersions, note, class: className } = Astro.props;
+const locale = Astro.locals.locale ?? 'es';
+
+const date = calendarEnd ? gtfsDateLabel(calendarEnd) : null;
+const version = feedVersions?.length ? feedVersions.map((v) => `v${v}`).join(', ') : null;
+---
+
+<aside
+  class:list={['flex items-start gap-3 rounded-xl border border-warn bg-warn-soft px-4 py-3 text-sm font-medium text-warn-ink', className]}
+  role="note"
+  aria-label={t(locale, 'crtm.noScheduleTitle')}
+>
+  <span class="mt-px grid size-5 shrink-0 place-items-center rounded-full bg-warn text-[11px] font-bold text-page" aria-hidden="true">
+    !
+  </span>
+  <span class="min-w-0">
+    <span class="block font-semibold">{t(locale, 'crtm.noScheduleTitle')}</span>
+    <span class="mt-0.5 block text-[13px] leading-relaxed text-warn-ink/90">
+      {
+        date && version
+          ? t(locale, 'crtm.noScheduleBody', { date, version })
+          : date
+            ? t(locale, 'crtm.noScheduleBodyNoVersion', { date })
+            : t(locale, 'crtm.noScheduleGeneric')
+      }
+      {note && <span class="mt-0.5 block">{note}</span>}
+    </span>
+  </span>
+</aside>

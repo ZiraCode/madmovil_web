@@ -1,0 +1,559 @@
+---
+// Cards de paradas favoritas en la home: tiempos reales por parada (EMT con el API de la
+// EMT; CRTM con el tablón RT de /crtm/stops/arrivals — Cercanías GTFS-RT de Renfe y
+// bus/ML/metro SAE del widget oficial del CRTM, HH:MM estimada protagonista + "en N min"
+// recalculado por tick). Los favoritos viven en el cliente (localStorage), así que todo el
+// fetch es client-side. Cada favorito puede traer líneas fijadas (lines[]): la card muestra
+// una fila por línea favorita (arrivals SIN ?line= y filtro client-side); sin líneas fijadas
+// muestra el siguiente bus/salida. Diseño 1A: cabecera en franja surface-2 (stopHeaderHtml,
+// la misma de /favoritos) y filas con el badge de la línea a la izquierda y el tiempo como
+// cifra grande a la derecha; ≤5 min se tiñe de marca (EMT). UNA sola escala para todas las
+// filas —BADGE/ROW_*—, tenga la parada líneas fijadas o no y sea EMT o CRTM: la rejilla de
+// la home pone unas al lado de otras y cualquier diferencia de tamaño entre tarjetas se lee
+// como desorden, no como jerarquía.
+// El nombre y la dirección no llegan con el favorito: se resuelven con /stops/detail (EMT,
+// fallback /stops/search) o /crtm/stops/search (CRTM) y se cachean en localStorage
+// (compartidas con /favoritos; las CRTM en cachés propias, nunca mezcladas con EMT).
+// Color de línea EMT con /lines/search (madmovil:linecolors); badges CRTM por red
+// (crtm-badge), nunca linecolors.
+import { href, translator } from '../lib/i18n';
+
+const locale = Astro.locals.locale ?? 'es';
+const tr = translator(locale);
+---
+
+<section id="home-favorites" class="mt-7 hidden" aria-label={tr('favorites.sectionAria')}>
+  <div class="mb-2.5 flex items-baseline justify-between gap-3">
+    <h2 class="text-[17px] font-bold tracking-tight">{tr('favorites.shortcut')}</h2>
+    <a
+      href={href('/favoritos', locale)}
+      class="rounded-md px-2 py-1 text-xs font-semibold text-brand-ink transition hover:bg-surface-2 focus-ring"
+    >
+      {tr('favorites.manage')}
+    </a>
+  </div>
+  {/* Tarjetas sueltas, así que en escritorio reparten el shell ancho en columnas
+      en vez de estirarse a lo largo. items-start: sin él la rejilla estira todas las
+      tarjetas de la fila al alto de la más alta y una parada con una sola línea se
+      queda con medio palmo de vacío debajo */}
+  <div id="home-favorites-grid" class="grid items-start gap-2.5 lg:grid-cols-2 xl:grid-cols-3"></div>
+</section>
+
+<script>
+  import { crtmStopCode, getFavorites, isCrtmStopId, matchesFavoriteLine, stopUrl } from '../lib/favorites';
+  import { getArrivals, getCrtmArrivals, getStopDetail, searchCrtmStopById, searchStopById } from '../lib/api';
+  import { displayStopName, gtfsDateLabel, chipFallbackColors, isCercaniasStop, lineColorChipStyle, metroLineColors } from '../lib/crtm';
+  import { departureEtaLabel, isoTimeLabel } from '../lib/departures';
+  import { clientLocale, t } from '../lib/i18n';
+  import { ensureLineColors, paintLineBadges } from '../lib/linecolors';
+  import { crtmLineColor, paintAndFetchCrtmLineColors, paintCrtmLineBadges } from '../lib/crtmlinecolors';
+  import { escapeHtml, stopHeaderHtml } from '../lib/cards';
+  import { ADDR_KEY, CRTM_ADDR_KEY, CRTM_NAMES_KEY, NAMES_KEY, readCache, writeCache } from '../lib/stopdetailcache';
+  import type { BusArrival } from '../types/api';
+  import type { CrtmArrivalItem, CrtmStopArrivals } from '../types/crtm';
+
+  const locale = clientLocale();
+
+  interface FavItem {
+    stopId: string;
+    name: string;
+    alias: string | null;
+    lines: string[];
+  }
+
+  // EMT: arrivals en tiempo real; CRTM: tablón RT de /crtm/stops/arrivals (todas las redes;
+  // la estación de red en catálogo con la fuente caída llega con noSchedule y 0 items)
+  type StopState =
+    | { arrivals: BusArrival[]; error: boolean }
+    | { rt: CrtmArrivalItem[]; error: boolean; noSchedule?: CrtmStopArrivals['noScheduleData'] | null };
+
+  // Claves y readCache/writeCache compartidas con /favoritos (lib/stopdetailcache): las
+  // cachés de nombre/dirección son las mismas; aquí solo se usan esas 4 (sin líneas ni
+  // municipio) y se ven tipadas como Record de strings
+  type StrCache = Record<string, string>;
+
+  const section = document.getElementById('home-favorites')!;
+  const grid = document.getElementById('home-favorites-grid')!;
+  // Intro "qué es la web" de index.astro: visible sin favoritos (primera visita/SEO), oculta con ellos
+  const intro = document.getElementById('home-intro');
+
+  let favorites: FavItem[] = [];
+  const states = new Map<string, StopState>();
+  let nameCache = readCache<StrCache>(NAMES_KEY);
+  let addrCache = readCache<StrCache>(ADDR_KEY);
+  let crtmNameCache = readCache<StrCache>(CRTM_NAMES_KEY);
+  let crtmAddrCache = readCache<StrCache>(CRTM_ADDR_KEY);
+  let fetchedAt = Date.now();
+  let refreshTimer: ReturnType<typeof setInterval> | undefined;
+  let crtmRtTimer: ReturnType<typeof setInterval> | undefined;
+  let tickTimer: ReturnType<typeof setInterval> | undefined;
+
+  // El alias lo escribe el usuario y se respeta tal cual; el nombre del API sí se normaliza
+  // (los CRTM llegan en mayúsculas y convivían con los EMT en caja mixta)
+  function displayName(f: FavItem): string {
+    const cache = isCrtmStopId(f.stopId) ? crtmNameCache : nameCache;
+    const fallback = isCrtmStopId(f.stopId) ? crtmStopCode(f.stopId) : f.stopId;
+    return f.alias ?? displayStopName(cache[f.stopId] ?? (f.name !== f.stopId ? f.name : fallback));
+  }
+
+  // Los arrivals traen la línea con sufijo de sentido ("150/1"): el badge muestra la base
+  function badgeLabel(line: string): string {
+    return line.split('/')[0];
+  }
+
+  // UNA sola escala para todas las filas, sean EMT o CRTM, haya una línea fijada o veinte:
+  // badge BADGE (el mismo de las listas de /parada), destino a 13.5 y el dato de la derecha
+  // en ROW_MAIN con su apostilla en ROW_MINOR debajo. Antes convivían tres tamaños de dato
+  // (24 el "siguiente bus" suelto, 20 las líneas fijadas, 15 el HH:MM del CRTM) y dos de
+  // badge, y la rejilla de la home los ponía uno al lado del otro: se leía como un batiburrillo.
+  const BADGE = 'h-7 min-w-[34px] px-1.5 text-[13px]';
+  const ROW = 'flex items-center gap-2.5 py-2';
+  const ROW_DEST = 'min-w-0 flex-1 truncate text-[13.5px] text-ink-2';
+  const ROW_SIDE = 'flex shrink-0 flex-col items-end gap-0.5 text-right';
+  const ROW_MAIN = 'text-xl font-bold leading-none tracking-tight tabular-nums';
+  const ROW_MINOR = 'text-[11px] font-semibold tabular-nums text-ink-3';
+  const ROW_EMPTY = 'min-w-0 flex-1 truncate text-[13.5px] font-medium text-ink-3';
+
+  // El tiempo se parte en cifra y unidad: la cifra manda tipográficamente y la unidad la acompaña
+  function etaParts(etaSec: number): { value: string; unit: string; urgent: boolean } {
+    if (etaSec >= 999999) return { value: '>45', unit: 'min', urgent: false };
+    const remaining = Math.round(etaSec - (Date.now() - fetchedAt) / 1000);
+    if (remaining <= 0) return { value: t(locale, 'arrivals.arriving'), unit: '', urgent: true };
+    if (remaining < 60) return { value: String(remaining), unit: 's', urgent: true };
+    const min = Math.floor(remaining / 60);
+    return { value: String(min), unit: 'min', urgent: min <= 5 };
+  }
+
+  function etaHtml(etaSec: number): string {
+    const p = etaParts(etaSec);
+    return `
+      <span class="eta flex shrink-0 items-baseline gap-0.5" data-eta-sec="${etaSec}">
+        <span class="eta-val ${ROW_MAIN} ${p.urgent ? 'text-brand-ink' : 'text-ink'}">${p.value}</span>
+        <span class="eta-unit text-[11px] font-semibold ${p.urgent ? 'text-brand-ink' : 'text-ink-3'}">${p.unit}</span>
+      </span>`;
+  }
+
+  // Segunda llegada de la misma línea: misma mecánica de tick, mismo cuerpo que el "en N min"
+  // del CRTM (ROW_MINOR) para que las dos apostillas pesen igual
+  function etaNextHtml(etaSec: number): string {
+    const p = etaParts(etaSec);
+    return `
+      <span class="eta flex shrink-0 items-baseline gap-0.5 ${ROW_MINOR}" data-eta-sec="${etaSec}" data-eta-minor="true">
+        <span>${t(locale, 'fav.next')}</span>
+        <span class="eta-val">${p.value}</span>
+        <span class="eta-unit">${p.unit}</span>
+      </span>`;
+  }
+
+  function lineBadge(label: string): string {
+    return `<span class="grid ${BADGE} shrink-0 place-items-center rounded-md bg-ink font-bold tabular-nums text-surface" data-line="${escapeHtml(label)}">${escapeHtml(badgeLabel(label))}</span>`;
+  }
+
+  // Fila por línea favorita: badge con su color + destino + tiempo del próximo bus
+  // (+ segunda llegada en pequeño debajo, "siguiente")
+  function lineRowHtml(label: string, arrival: BusArrival | undefined, next: BusArrival | undefined, last: boolean): string {
+    const border = last ? '' : ' border-b border-line';
+    if (!arrival) {
+      return `
+        <div class="${ROW}${border}">
+          ${lineBadge(label)}
+          <p class="${ROW_EMPTY}">${t(locale, 'arrivals.noneExpected')}</p>
+        </div>`;
+    }
+    return `
+      <div class="${ROW}${border}">
+        ${lineBadge(label)}
+        <p class="${ROW_DEST}">${escapeHtml(arrival.destination)}</p>
+        <span class="${ROW_SIDE}">
+          ${etaHtml(arrival.estimateArriveSec)}
+          ${next ? etaNextHtml(next.estimateArriveSec) : ''}
+        </span>
+      </div>`;
+  }
+
+  // Sin líneas fijadas: el siguiente bus de cualquier línea + el siguiente de esa línea.
+  // Misma fila que las fijadas: que una parada tenga líneas fijadas y otra no NO es motivo
+  // para que sus tarjetas se lean con tipografías distintas
+  function nextBusHtml(next: BusArrival, following: BusArrival | undefined): string {
+    return `
+      <div class="${ROW}">
+        ${lineBadge(next.line)}
+        <p class="${ROW_DEST}">${escapeHtml(next.destination)}</p>
+        <span class="${ROW_SIDE}">
+          ${etaHtml(next.estimateArriveSec)}
+          ${following ? etaNextHtml(following.estimateArriveSec) : ''}
+        </span>
+      </div>`;
+  }
+
+  // CRTM RT (todas las redes): HH:MM ESTIMADA protagonista + "en N min · +N min"
+  // recalculado por tick (delayMin viaja en data- para no perderlo al recalcular sin
+  // refetch; el retraso solo existe en r_*, el resto va sin él).
+  // Los cancelados no pintan fila de "próximo tren": en una card compacta sin sitio para
+  // el tag, mostrarlos como siguiente sería engañoso
+  function rtDelayMin(item: CrtmArrivalItem): number {
+    return item.delaySec && item.delaySec >= 60 ? Math.round(item.delaySec / 60) : 0;
+  }
+
+  function rtEtaHtml(item: CrtmArrivalItem): string {
+    const base = departureEtaLabel(locale, item.estimatedISO, (item.dayOffset ?? 0) === 1 ? 1 : 0);
+    const delay = rtDelayMin(item);
+    const label = delay > 0 ? `${base} · +${delay} min` : base;
+    return `
+      <span class="eta-crtm ${ROW_SIDE}" data-crtm-iso="${escapeHtml(item.estimatedISO)}" data-day-offset="${item.dayOffset ?? 0}" data-delay-min="${delay}">
+        <span class="${ROW_MAIN} text-ink">${escapeHtml(isoTimeLabel(locale, item.estimatedISO))}</span>
+        <span class="crtm-eta-unit ${ROW_MINOR}">${escapeHtml(label)}</span>
+      </span>`;
+  }
+
+  // Badge por red con el network del item (r_* no trae network: siempre cercanías). Las
+  // líneas ml/metro/cercanías llevan además su color oficial vía chipFallbackColors; sin
+  // network en el item, color por label de la caché (bus incluido si no es ambiguo)
+  function rtBadge(item: CrtmArrivalItem): string {
+    const network = item.network ?? 'cercanias';
+    const known = chipFallbackColors(item.line ?? '', network) ?? crtmLineColor(item.line ?? '');
+    const style = known ? ` style="background:${known.color};color:${known.textColor}"` : '';
+    const cls = `crtm-badge grid ${BADGE} shrink-0 place-items-center rounded-md font-bold tabular-nums${known ? '' : ' bg-ink text-surface'}`;
+    return `<span class="${cls}" data-network="${escapeHtml(network)}"${style}>${escapeHtml(item.line ?? '—')}</span>`;
+  }
+
+  function rtRowHtml(item: CrtmArrivalItem, isStation: boolean, last = true): string {
+    const border = last ? '' : ' border-b border-line';
+    const title = item.realtime
+      ? isStation
+        ? t(locale, 'cercanias.estimatedTitle')
+        : t(locale, 'crtmRt.estimatedTitle')
+      : t(locale, 'favCrtm.scheduledTitle');
+    const dest = displayStopName(item.dest ?? (isStation ? t(locale, 'cercanias.specialService') : item.lineName) ?? '—');
+    return `
+      <div class="${ROW}${border}" title="${escapeHtml(title)}">
+        ${rtBadge(item)}
+        <p class="${ROW_DEST}">${escapeHtml(dest)}</p>
+        ${rtEtaHtml(item)}
+      </div>`;
+  }
+
+  function rtBodyHtml(f: FavItem, items: CrtmArrivalItem[], noSchedule: CrtmStopArrivals['noScheduleData'] | null | undefined, isStation: boolean): string {
+    if (noSchedule) {
+      return crtmNoScheduleBodyHtml(f, noSchedule);
+    }
+    const active = items.filter((d) => !d.canceled);
+    if (f.lines.length > 0) {
+      return f.lines
+        .map((label, i) => {
+          const item = active.find((d) => matchesFavoriteLine(d.line ?? '', label));
+          const border = i === f.lines.length - 1 ? '' : ' border-b border-line';
+          if (!item) {
+            const known = crtmLineColor(label) ?? chipFallbackColors(label, null);
+            const plainCls = `grid ${BADGE} shrink-0 place-items-center rounded-md font-bold tabular-nums${known ? '' : ' bg-ink text-surface'}`;
+            const style = known ? ` style="background:${known.color};color:${known.textColor}"` : ` data-crtm-line="${escapeHtml(label)}"`;
+            return `
+              <div class="${ROW}${border}">
+                <span class="${plainCls}"${style}>${escapeHtml(label)}</span>
+                <p class="${ROW_EMPTY}">${t(locale, 'favCrtm.noDepartures')}</p>
+              </div>`;
+          }
+          return rtRowHtml(item, isStation, false);
+        })
+        .join('');
+    }
+    const next = active[0];
+    if (!next) return noteHtml(t(locale, 'favCrtm.noDepartures'));
+    return rtRowHtml(next, isStation);
+  }
+
+  // Estación de metro en modo catálogo: fila por línea fijada con su color oficial y el
+  // aviso de "sin horarios oficiales" (metroLineColors SOLO aquí: los labels colisionan
+  // con los urbanos de otros municipios)
+  function crtmNoScheduleRowHtml(label: string, last: boolean, date: string | null): string {
+    const border = last ? '' : ' border-b border-line';
+    const metro = metroLineColors(label);
+    const style = metro ? ` style="${lineColorChipStyle(metro.color)}"` : '';
+    const cls = `grid ${BADGE} shrink-0 place-items-center rounded-md font-bold tabular-nums${metro ? '' : ' bg-ink text-surface'}`;
+    const title = date ? t(locale, 'favCrtm.noScheduleTitle', { date }) : t(locale, 'crtm.noScheduleShort');
+    return `
+      <div class="${ROW}${border}" title="${escapeHtml(title)}">
+        <span class="${cls}"${style}>${escapeHtml(label)}</span>
+        <p class="${ROW_EMPTY}">${escapeHtml(t(locale, 'crtm.noScheduleShort'))}</p>
+      </div>`;
+  }
+
+  // Estación de red en catálogo con la fuente RT caída (llegan 0 items + noScheduleData)
+  function crtmNoScheduleBodyHtml(f: FavItem, noSchedule: NonNullable<CrtmStopArrivals['noScheduleData']>): string {
+    const date = noSchedule.calendarEnd ? gtfsDateLabel(noSchedule.calendarEnd) : null;
+    if (f.lines.length > 0) {
+      return f.lines.map((label, i) => crtmNoScheduleRowHtml(label, i === f.lines.length - 1, date)).join('');
+    }
+    return noteHtml(t(locale, 'crtm.noScheduleShort'), date ? t(locale, 'favCrtm.noScheduleTitle', { date }) : undefined);
+  }
+
+  // Los tres estados sin dato (sin buses, sin salidas, sin datos) se escriben igual y ocupan
+  // el alto de una fila: el "Sin datos ahora mismo" iba en ámbar y era la única tinta de color
+  // de toda la rejilla, cantaba como una alarma por un fallo pasajero de la API
+  function noteHtml(text: string, title?: string): string {
+    return `<p class="flex h-11 items-center text-[13.5px] font-medium text-ink-3"${title ? ` title="${escapeHtml(title)}"` : ''}>${escapeHtml(text)}</p>`;
+  }
+
+  function bodyHtml(f: FavItem, state: StopState | undefined): string {
+    if (!state) {
+      return `<div class="${ROW}" aria-hidden="true">
+        <div class="h-7 min-w-[34px] shrink-0 animate-pulse rounded-md bg-surface-2"></div>
+        <div class="h-4 w-2/5 animate-pulse rounded bg-surface-2"></div>
+        <div class="ml-auto h-5 w-12 shrink-0 animate-pulse rounded bg-surface-2"></div>
+      </div>`;
+    }
+    if (state.error) return noteHtml(t(locale, 'fav.noData'));
+    if ('rt' in state) {
+      return rtBodyHtml(f, state.rt, state.noSchedule, isCercaniasStop(crtmStopCode(f.stopId)));
+    }
+    if (f.lines.length > 0) {
+      return f.lines
+        .map((label, i) => {
+          const matches = state.arrivals.filter((a) => matchesFavoriteLine(a.line, label));
+          return lineRowHtml(label, matches[0], matches[1], i === f.lines.length - 1);
+        })
+        .join('');
+    }
+    const next = state.arrivals[0];
+    if (!next) return noteHtml(t(locale, 'arrivals.noneExpected'));
+    const following = state.arrivals.find((a, i) => i > 0 && a.line === next.line);
+    return nextBusHtml(next, following);
+  }
+
+  function render(): void {
+    grid.innerHTML = favorites
+      .map((f) => {
+        const crtm = isCrtmStopId(f.stopId);
+        const code = crtm ? crtmStopCode(f.stopId) : '';
+        // Estación de Cercanías (r_*): ref "Estación 18000" + tag propio (el namespace r_
+        // del server no aporta nada al usuario)
+        const isStation = isCercaniasStop(code);
+        const address = (crtm ? crtmAddrCache[f.stopId] : addrCache[f.stopId]) as string | undefined;
+        const idLabel = crtm ? (isStation ? code.slice(2) : code) : f.stopId;
+        // La cabecera es la MISMA pieza que en /favoritos (stopHeaderHtml): las dos superficies
+        // de favoritos se leían con tipografías distintas y el número de parada aquí era un
+        // gris diminuto que además robaba sitio al nombre en la primera línea; ahora el nombre
+        // se queda con la línea entera y "Parada X" baja sola si no cabe (flex-wrap)
+        return `
+          <a href="${stopUrl(f.stopId)}" class="block min-w-0 overflow-hidden rounded-xl border border-control-edge bg-surface shadow-xs transition hover:border-brand/60 focus-ring">
+            <span class="block bg-surface-2 px-3.5 py-2.5">
+              ${stopHeaderHtml({ name: f.alias ?? displayName(f), stopId: idLabel, address: address ?? null, tag: crtm ? (isStation ? t(locale, 'crtm.network.cercanias') : 'CRTM') : undefined, locale, station: isStation, stacked: true })}
+            </span>
+            <span class="block px-3.5 py-1">
+              ${bodyHtml(f, states.get(f.stopId))}
+            </span>
+          </a>`;
+      })
+      .join('');
+  }
+
+  // Filas CRTM: el HH:MM estimado no cambia entre refetches, solo se recalcula el
+  // "en N min" (sin refetch). Las de Cercanías llevan además el retraso en
+  // data-delay-min ("en 7 min · +3 min")
+  function tickCrtm(): void {
+    grid.querySelectorAll<HTMLElement>('.eta-crtm[data-crtm-iso]').forEach((el) => {
+      if (el.dataset.dayOffset === '1') return;
+      const iso = el.dataset.crtmIso;
+      const unit = el.querySelector<HTMLElement>('.crtm-eta-unit');
+      if (iso && unit) {
+        const base = departureEtaLabel(locale, iso);
+        const delay = Number(el.dataset.delayMin ?? 0);
+        unit.textContent = delay > 0 ? `${base} · +${delay} min` : base;
+      }
+    });
+  }
+
+  function tick(): void {
+    grid.querySelectorAll<HTMLElement>('.eta[data-eta-sec]').forEach((el) => {
+      const p = etaParts(Number(el.dataset.etaSec));
+      const minor = el.dataset.etaMinor === 'true';
+      const val = el.querySelector<HTMLElement>('.eta-val');
+      const unit = el.querySelector<HTMLElement>('.eta-unit');
+      if (val) {
+        val.textContent = p.value;
+        val.classList.toggle('text-brand-ink', p.urgent);
+        val.classList.toggle('text-ink', !p.urgent && !minor);
+        val.classList.toggle('text-ink-3', !p.urgent && minor);
+      }
+      if (unit) {
+        unit.textContent = p.unit;
+        unit.classList.toggle('text-brand-ink', p.urgent);
+        unit.classList.toggle('text-ink-3', !p.urgent);
+      }
+    });
+    tickCrtm();
+  }
+
+  // El favorito del server no trae nombre ni dirección: resolverlos y cachear (las mismas
+  // cachés que /favoritos). EMT con /stops/detail (fallback /stops/search para el nombre si
+  // la EMT cae); CRTM con /crtm/stops/search (artefactos KV, cachés propias sin mezclar)
+  async function resolveDetails(): Promise<void> {
+    const emt = favorites.filter((f) => !isCrtmStopId(f.stopId));
+    const crtm = favorites.filter((f) => isCrtmStopId(f.stopId));
+    const missingE = [
+      ...new Set(emt.filter((f) => !f.alias && (!f.name || f.name === f.stopId) && !nameCache[f.stopId]).map((f) => f.stopId)),
+      ...new Set(emt.filter((f) => !addrCache[f.stopId]).map((f) => f.stopId)),
+    ];
+    const missingC = [
+      ...new Set(crtm.filter((f) => !f.alias && (!f.name || f.name === f.stopId) && !crtmNameCache[f.stopId]).map((f) => f.stopId)),
+      ...new Set(crtm.filter((f) => !crtmAddrCache[f.stopId]).map((f) => f.stopId)),
+    ];
+    let changed = false;
+    await Promise.all([
+      Promise.allSettled(
+        [...new Set(missingE)].map(async (stopId) => {
+          try {
+            const detail = await getStopDetail(stopId);
+            nameCache[stopId] = detail.name;
+            addrCache[stopId] = detail.postalAddress;
+            changed = true;
+          } catch {
+            const res = await searchStopById(stopId).catch(() => null);
+            const stop = res?.stops[0];
+            if (stop) {
+              nameCache[stopId] = stop.name;
+              changed = true;
+            }
+          }
+        })
+      ),
+      Promise.allSettled(
+        [...new Set(missingC)].map(async (stopId) => {
+          try {
+            const res = await searchCrtmStopById(crtmStopCode(stopId));
+            const stop = res.stops[0];
+            if (stop) {
+              crtmNameCache[stopId] = stop.name;
+              crtmAddrCache[stopId] = stop.address;
+              changed = true;
+            }
+          } catch {
+            /* artefactos no disponibles: la card se queda con el código */
+          }
+        })
+      ),
+    ]);
+    if (changed) {
+      writeCache(NAMES_KEY, nameCache);
+      writeCache(ADDR_KEY, addrCache);
+      writeCache(CRTM_NAMES_KEY, crtmNameCache);
+      writeCache(CRTM_ADDR_KEY, crtmAddrCache);
+    }
+  }
+
+  async function fetchArrivals(): Promise<void> {
+    // Sin ?line=: un solo fetch por parada devuelve todas las líneas y se filtra en render
+    const emtFavs = favorites.filter((f) => !isCrtmStopId(f.stopId));
+    const results = await Promise.allSettled(emtFavs.map((f) => getArrivals(f.stopId)));
+    emtFavs.forEach((f, i) => {
+      const r = results[i];
+      if (r.status === 'fulfilled') {
+        states.set(f.stopId, { arrivals: r.value.arrivals, error: false });
+      } else {
+        states.set(f.stopId, { arrivals: [], error: true });
+      }
+    });
+    fetchedAt = Date.now();
+    const lines: string[] = [];
+    for (const f of emtFavs) {
+      const state = states.get(f.stopId);
+      if (!state || state.error || !('arrivals' in state)) continue;
+      if (f.lines.length > 0) lines.push(...f.lines);
+      else if (state.arrivals[0]) lines.push(state.arrivals[0].line);
+    }
+    render();
+    paintLineBadges(grid);
+    void ensureLineColors(lines).then(() => paintLineBadges(grid));
+    tick();
+  }
+
+  // CRTM (todas las redes): tablón RT con ventana corta y refetch de 60 s. Escalonado
+  // (una llamada tras otra): el grupo crtm del rate limit es 60 req/min compartido con el
+  // board de la página de parada, y N fetch simultáneos cada minuto lo quemarían
+  async function fetchCrtmRt(): Promise<void> {
+    const crtmFavs = favorites.filter((f) => isCrtmStopId(f.stopId));
+    for (const f of crtmFavs) {
+      try {
+        const res = await getCrtmArrivals(crtmStopCode(f.stopId), 60);
+        states.set(f.stopId, { rt: res.departures, error: false, noSchedule: res.noScheduleData ?? null });
+      } catch {
+        states.set(f.stopId, { rt: [], error: true, noSchedule: null });
+      }
+    }
+    if (crtmFavs.length > 0) {
+      render();
+      tick();
+    }
+  }
+
+  async function load(): Promise<void> {
+    try {
+      favorites = await getFavorites();
+    } catch {
+      return;
+    }
+    if (favorites.length === 0) {
+      clearInterval(refreshTimer);
+      clearInterval(crtmRtTimer);
+      clearInterval(tickTimer);
+      section.classList.add('hidden');
+      intro?.classList.remove('hidden');
+      grid.innerHTML = '';
+      return;
+    }
+    states.clear();
+    section.classList.remove('hidden');
+    intro?.classList.add('hidden');
+    render();
+    // Los colores de las líneas fijadas se conocen ya: se piden EN PARALELO con arrivals
+    // (llegan en una segunda ronda /lines/search, nunca con arrivals) y se pintan al resolver
+    const fixedLines = favorites.flatMap((f) => (isCrtmStopId(f.stopId) ? [] : f.lines));
+    const colorsReady = ensureLineColors(fixedLines).then(() => paintLineBadges(grid));
+    // CRTM: un solo fetch trae TODOS los colores (caché crtmlinecolors) — sale en paralelo
+    // con el resto y repinta los badges data-crtm-line (líneas fijadas sin item RT)
+    const crtmColorsReady = paintAndFetchCrtmLineColors(grid);
+    await Promise.all([resolveDetails(), fetchArrivals(), fetchCrtmRt()]);
+    // El render final reconstruye el DOM: repintar lo ya cacheado y enganchar el repintado
+    // cuando la ronda de colores resuelva (si aún no lo ha hecho)
+    render();
+    paintLineBadges(grid);
+    void colorsReady.then(() => paintLineBadges(grid));
+    void crtmColorsReady.then(() => paintCrtmLineBadges(grid));
+    scheduleRefresh();
+    clearInterval(tickTimer);
+    if (!document.hidden) tickTimer = setInterval(tick, 1000);
+  }
+
+  function scheduleRefresh(): void {
+    clearInterval(refreshTimer);
+    clearInterval(crtmRtTimer);
+    // Con muchos favoritos se espacia el refresco para no chocar con el rate limit (60 req/min)
+    const intervalMs = favorites.length > 10 ? 90_000 : 30_000;
+    refreshTimer = setInterval(() => {
+      if (!document.hidden && favorites.length > 0) void fetchArrivals();
+    }, intervalMs);
+    // CRTM RT: 60 s (el server cachea cada feed por isolate; no castiga a las fuentes)
+    if (favorites.some((f) => isCrtmStopId(f.stopId))) {
+      crtmRtTimer = setInterval(() => {
+        if (!document.hidden) void fetchCrtmRt();
+      }, 60_000);
+    }
+  }
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      clearInterval(refreshTimer);
+      clearInterval(crtmRtTimer);
+      clearInterval(tickTimer);
+    } else if (favorites.length > 0) {
+      void fetchArrivals();
+      void fetchCrtmRt();
+      scheduleRefresh();
+      tickTimer = setInterval(tick, 1000);
+    }
+  });
+
+  tickTimer = setInterval(tick, 1000);
+
+  void load();
+</script>

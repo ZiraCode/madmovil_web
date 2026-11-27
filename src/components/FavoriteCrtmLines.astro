@@ -1,0 +1,98 @@
+---
+// Chips de líneas de la cabecera de /parada/crtm. Cuando la parada es favorita, cada chip
+// lleva una estrella (☆/★): clic = añadir/quitar línea favorita (reemplazo del CONJUNTO
+// completo de lines en localStorage; el contexto es ESA parada). La máquina de estado
+// vive en lib/favlinechips (compartida con la variante EMT); este componente aporta solo
+// el chipHtml. Color por red (crtm-badge + data-network), nunca linecolors.ts; las ML y
+// las de metro llevan además su color oficial (color/textColor del API, u
+// mlLineColors/metroLineColors en re-render).
+import { lineColorChipStyle } from '../lib/crtm';
+import type { CrtmNetwork } from '../types/crtm';
+interface Props {
+  stopId: string;
+  lines: { label: string; network: CrtmNetwork | null; color?: string; textColor?: string }[];
+}
+
+const { stopId, lines } = Astro.props;
+
+function chipStyle(l: { label: string; color?: string; textColor?: string }): string | undefined {
+  if (l.color) return lineColorChipStyle(`#${l.color}`);
+  return undefined;
+}
+---
+
+<div id="fav-crtm-lines" data-stop-id={stopId} class="mt-2.5 flex flex-wrap gap-1.5">
+  {
+    lines.map((l) =>
+      l.network ? (
+        <span
+          class="crtm-badge grid h-7 min-w-[34px] place-items-center rounded-md px-1.5 text-[13px] font-bold tabular-nums"
+          data-line={l.label}
+          data-network={l.network}
+          style={chipStyle(l)}
+        >
+          {l.label}
+        </span>
+      ) : (
+        <span
+          class="grid h-7 min-w-[34px] place-items-center rounded-md bg-ink px-1.5 text-[13px] font-bold tabular-nums text-surface"
+          data-line={l.label}
+          style={chipStyle(l)}
+        >
+          {l.label}
+        </span>
+      )
+    )
+  }
+</div>
+<p id="fav-crtm-lines-feedback" class="sr-only" role="status"></p>
+
+<script>
+  import { initFavoriteLineChips, type FavoriteLineChipState } from '../lib/favlinechips';
+  import { chipFallbackColors, lineColorChipStyle } from '../lib/crtm';
+  import { clientLocale, t } from '../lib/i18n';
+  import { escapeHtml, starSvgHtml } from '../lib/cards';
+
+  const locale = clientLocale();
+  const container = document.getElementById('fav-crtm-lines');
+
+  if (container) {
+    const chips = [...container.querySelectorAll<HTMLElement>('[data-line]')];
+    const labels = chips.map((el) => el.dataset.line ?? '').filter(Boolean);
+    const networks = new Map(chips.map((el) => [el.dataset.line ?? '', el.dataset.network ?? '']));
+
+    function chipHtml(label: string, state: FavoriteLineChipState): string {
+      const network = networks.get(label);
+      const base = 'h-7 min-w-[34px] rounded-md px-1.5 text-[13px] font-bold tabular-nums';
+      // El chip suelto centra su label con grid, pero el interactivo lleva ADEMÁS la estrella:
+      // en grid caerían en dos filas implícitas (estrella DEBAJO del label), así que va
+      // inline-flex + gap, igual que los chips EMT de FavoriteLines
+      const plain = `grid place-items-center ${base}`;
+      const button = `inline-flex items-center justify-center gap-1 ${base} transition focus-ring`;
+      // El re-render no conserva el color del API: color oficial conocido de ML1–ML4 y de
+      // las líneas de cercanías (labels únicos) y de metro solo si el chip es de red metro
+      // (los labels colisionan con urbanos)
+      const known = chipFallbackColors(label, network);
+      const style = known ? ` style="${lineColorChipStyle(known.color)}"` : '';
+      if (!state.interactive) {
+        return network
+          ? `<span class="crtm-badge ${plain}" data-line="${escapeHtml(label)}" data-network="${escapeHtml(network)}"${style}>${escapeHtml(label)}</span>`
+          : `<span class="${plain} bg-ink text-surface" data-line="${escapeHtml(label)}"${style}>${escapeHtml(label)}</span>`;
+      }
+      const title = state.active ? t(locale, 'favLine.unpin', { label }) : t(locale, 'favLine.pin', { label });
+      const star = starSvgHtml(state.active);
+      const cls = network
+        ? `crtm-badge ${button}`
+        : `${button} bg-ink text-surface`;
+      return `<button type="button" aria-pressed="${state.active}" title="${escapeHtml(title)}" data-line="${escapeHtml(label)}" data-network="${network ? escapeHtml(network) : ''}" class="${cls}"${style}><span>${escapeHtml(label)}</span>${star}</button>`;
+    }
+
+    initFavoriteLineChips({
+      container,
+      feedback: document.getElementById('fav-crtm-lines-feedback'),
+      labels,
+      chipHtml,
+      buttonAttr: 'data-line',
+    });
+  }
+</script>

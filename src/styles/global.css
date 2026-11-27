@@ -1,0 +1,645 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Public Sans variable self-hosted (OFL, ver /fonts/OFL.txt). El ?v= es
+   cache-busting: _headers sirve /fonts/* como immutable. */
+@font-face {
+  font-family: 'Public Sans';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url('/fonts/public-sans-latin-var.woff2?v=1') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Public Sans';
+  font-style: italic;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url('/fonts/public-sans-latin-italic-var.woff2?v=1') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/* ==========================================================================
+   madmovil · sistema visual
+   Neutros cálidos (grises con tinte arena) + acento tierra (arcilla).
+   Los colores de línea EMT llegan por style="background:#…": son acento
+   dinámico y NO forman parte de esta paleta.
+   Tema claro por defecto; oscuro automático por preferencia del sistema
+   y forzable con la clase .dark / .light en <html>.
+   ========================================================================== */
+
+:root {
+  color-scheme: light;
+
+  /* superficies */
+  --mm-page: oklch(0.982 0.006 78);
+  --mm-surface: oklch(0.997 0.003 78);
+  --mm-surface-2: oklch(0.958 0.009 78);
+  --mm-line: oklch(0.902 0.012 76);
+  --mm-line-strong: oklch(0.842 0.014 74);
+  /* Borde de controles PULSABLES (WCAG 1.4.11): >=3:1 contra surface, surface-2 y
+     page en ambos temas. --mm-line se queda para separadores y envolturas de tarjetas */
+  --mm-control-edge: oklch(0.625 0.014 76);
+
+  /* texto */
+  --mm-ink: oklch(0.235 0.014 62);
+  --mm-ink-2: oklch(0.472 0.014 64);
+  --mm-ink-3: oklch(0.52 0.014 66);
+
+  /* marca (arcilla) */
+  --mm-brand: oklch(0.545 0.135 42);
+  --mm-brand-hover: oklch(0.482 0.128 42);
+  --mm-brand-active: oklch(0.428 0.118 42);
+  --mm-brand-soft: oklch(0.955 0.028 58);
+  --mm-brand-ink: oklch(0.432 0.125 42);
+  --mm-on-brand: oklch(0.995 0.004 78);
+
+  /* estados */
+  --mm-ok: oklch(0.502 0.095 150);
+  --mm-ok-soft: oklch(0.958 0.028 150);
+  --mm-ok-ink: oklch(0.402 0.082 150);
+  --mm-warn: oklch(0.622 0.118 80);
+  --mm-warn-soft: oklch(0.965 0.035 85);
+  --mm-warn-ink: oklch(0.435 0.095 70);
+  --mm-danger: oklch(0.545 0.165 27);
+  --mm-danger-soft: oklch(0.962 0.028 27);
+  --mm-danger-ink: oklch(0.452 0.150 27);
+
+  /* redes CRTM (interurbano: azul petróleo · urbano: berenjena · ml: verde azulado · metro: azul índigo · cercanías: rojo Renfe; los chips de línea ML, metro y cercanías llevan además su color oficial inline) */
+  --mm-crtm-inter: oklch(0.520 0.075 215);
+  --mm-crtm-inter-soft: oklch(0.955 0.020 215);
+  --mm-crtm-inter-ink: oklch(0.420 0.070 215);
+  --mm-on-crtm-inter: oklch(0.995 0.004 78);
+  --mm-crtm-urban: oklch(0.500 0.095 315);
+  --mm-crtm-urban-soft: oklch(0.955 0.025 315);
+  --mm-crtm-urban-ink: oklch(0.410 0.090 315);
+  --mm-on-crtm-urban: oklch(0.995 0.004 78);
+  --mm-crtm-ml: oklch(0.520 0.080 160);
+  --mm-crtm-ml-soft: oklch(0.955 0.030 160);
+  --mm-crtm-ml-ink: oklch(0.420 0.075 160);
+  --mm-on-crtm-ml: oklch(0.995 0.004 78);
+  --mm-crtm-metro: oklch(0.480 0.110 264);
+  --mm-crtm-metro-soft: oklch(0.955 0.025 264);
+  --mm-crtm-metro-ink: oklch(0.400 0.100 264);
+  --mm-on-crtm-metro: oklch(0.995 0.004 78);
+  --mm-crtm-cercanias: oklch(0.540 0.150 350);
+  --mm-crtm-cercanias-soft: oklch(0.955 0.025 350);
+  --mm-crtm-cercanias-ink: oklch(0.440 0.130 350);
+  --mm-on-crtm-cercanias: oklch(0.995 0.004 78);
+
+  --mm-focus: oklch(0.618 0.120 42);
+  --mm-scrim: oklch(0.235 0.014 62 / 0.32);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+
+    --mm-page: oklch(0.175 0.010 62);
+    --mm-surface: oklch(0.228 0.012 62);
+    --mm-surface-2: oklch(0.278 0.012 62);
+    --mm-line: oklch(0.328 0.012 62);
+    --mm-line-strong: oklch(0.418 0.014 62);
+    --mm-control-edge: oklch(0.56 0.014 62);
+
+    --mm-ink: oklch(0.955 0.008 78);
+    --mm-ink-2: oklch(0.778 0.012 74);
+    --mm-ink-3: oklch(0.648 0.014 70);
+
+    --mm-brand: oklch(0.702 0.120 45);
+    --mm-brand-hover: oklch(0.755 0.122 45);
+    --mm-brand-active: oklch(0.802 0.115 45);
+    --mm-brand-soft: oklch(0.318 0.048 45);
+    --mm-brand-ink: oklch(0.858 0.088 55);
+    --mm-on-brand: oklch(0.192 0.020 45);
+
+    --mm-ok: oklch(0.722 0.110 150);
+    --mm-ok-soft: oklch(0.302 0.050 150);
+    --mm-ok-ink: oklch(0.858 0.090 150);
+    --mm-warn: oklch(0.782 0.110 85);
+    --mm-warn-soft: oklch(0.315 0.045 80);
+    --mm-warn-ink: oklch(0.882 0.080 85);
+    --mm-danger: oklch(0.682 0.150 27);
+    --mm-danger-soft: oklch(0.315 0.060 27);
+    --mm-danger-ink: oklch(0.858 0.090 27);
+
+    --mm-crtm-inter: oklch(0.700 0.090 215);
+    --mm-crtm-inter-soft: oklch(0.305 0.040 215);
+    --mm-crtm-inter-ink: oklch(0.850 0.070 215);
+    --mm-on-crtm-inter: oklch(0.190 0.025 215);
+    --mm-crtm-urban: oklch(0.700 0.100 315);
+    --mm-crtm-urban-soft: oklch(0.305 0.045 315);
+    --mm-crtm-urban-ink: oklch(0.850 0.080 315);
+    --mm-on-crtm-urban: oklch(0.190 0.025 315);
+    --mm-crtm-ml: oklch(0.700 0.095 160);
+    --mm-crtm-ml-soft: oklch(0.305 0.045 160);
+    --mm-crtm-ml-ink: oklch(0.850 0.080 160);
+    --mm-on-crtm-ml: oklch(0.190 0.025 160);
+    --mm-crtm-metro: oklch(0.680 0.115 264);
+    --mm-crtm-metro-soft: oklch(0.305 0.050 264);
+    --mm-crtm-metro-ink: oklch(0.840 0.085 264);
+    --mm-on-crtm-metro: oklch(0.180 0.030 264);
+    --mm-crtm-cercanias: oklch(0.690 0.125 350);
+    --mm-crtm-cercanias-soft: oklch(0.305 0.055 350);
+    --mm-crtm-cercanias-ink: oklch(0.850 0.090 350);
+    --mm-on-crtm-cercanias: oklch(0.190 0.030 350);
+
+    --mm-focus: oklch(0.752 0.120 48);
+    --mm-scrim: oklch(0.120 0.008 62 / 0.58);
+  }
+}
+
+/* Forzado manual (opcional): <html class="dark"> o <html class="light"> */
+.dark {
+  color-scheme: dark;
+  --mm-page: oklch(0.175 0.010 62);
+  --mm-surface: oklch(0.228 0.012 62);
+  --mm-surface-2: oklch(0.278 0.012 62);
+  --mm-line: oklch(0.328 0.012 62);
+  --mm-line-strong: oklch(0.418 0.014 62);
+  --mm-control-edge: oklch(0.56 0.014 62);
+  --mm-ink: oklch(0.955 0.008 78);
+  --mm-ink-2: oklch(0.778 0.012 74);
+  --mm-ink-3: oklch(0.648 0.014 70);
+  --mm-brand: oklch(0.702 0.120 45);
+  --mm-brand-hover: oklch(0.755 0.122 45);
+  --mm-brand-active: oklch(0.802 0.115 45);
+  --mm-brand-soft: oklch(0.318 0.048 45);
+  --mm-brand-ink: oklch(0.858 0.088 55);
+  --mm-on-brand: oklch(0.192 0.020 45);
+  --mm-ok: oklch(0.722 0.110 150);
+  --mm-ok-soft: oklch(0.302 0.050 150);
+  --mm-ok-ink: oklch(0.858 0.090 150);
+  --mm-warn: oklch(0.782 0.110 85);
+  --mm-warn-soft: oklch(0.315 0.045 80);
+  --mm-warn-ink: oklch(0.882 0.080 85);
+  --mm-danger: oklch(0.682 0.150 27);
+  --mm-danger-soft: oklch(0.315 0.060 27);
+  --mm-danger-ink: oklch(0.858 0.090 27);
+  --mm-crtm-inter: oklch(0.700 0.090 215);
+  --mm-crtm-inter-soft: oklch(0.305 0.040 215);
+  --mm-crtm-inter-ink: oklch(0.850 0.070 215);
+  --mm-on-crtm-inter: oklch(0.190 0.025 215);
+  --mm-crtm-urban: oklch(0.700 0.100 315);
+  --mm-crtm-urban-soft: oklch(0.305 0.045 315);
+  --mm-crtm-urban-ink: oklch(0.850 0.080 315);
+  --mm-on-crtm-urban: oklch(0.190 0.025 315);
+  --mm-crtm-ml: oklch(0.700 0.095 160);
+  --mm-crtm-ml-soft: oklch(0.305 0.045 160);
+  --mm-crtm-ml-ink: oklch(0.850 0.080 160);
+  --mm-on-crtm-ml: oklch(0.190 0.025 160);
+  --mm-crtm-metro: oklch(0.680 0.115 264);
+  --mm-crtm-metro-soft: oklch(0.305 0.050 264);
+  --mm-crtm-metro-ink: oklch(0.840 0.085 264);
+  --mm-on-crtm-metro: oklch(0.180 0.030 264);
+  --mm-crtm-cercanias: oklch(0.690 0.125 350);
+  --mm-crtm-cercanias-soft: oklch(0.305 0.055 350);
+  --mm-crtm-cercanias-ink: oklch(0.850 0.090 350);
+  --mm-on-crtm-cercanias: oklch(0.190 0.030 350);
+
+  --mm-focus: oklch(0.752 0.120 48);
+  --mm-scrim: oklch(0.120 0.008 62 / 0.58);
+}
+
+.light {
+  color-scheme: light;
+  --mm-page: oklch(0.982 0.006 78);
+  --mm-surface: oklch(0.997 0.003 78);
+  --mm-surface-2: oklch(0.958 0.009 78);
+  --mm-line: oklch(0.902 0.012 76);
+  --mm-line-strong: oklch(0.842 0.014 74);
+  --mm-control-edge: oklch(0.625 0.014 76);
+  --mm-ink: oklch(0.235 0.014 62);
+  --mm-ink-2: oklch(0.472 0.014 64);
+  --mm-ink-3: oklch(0.52 0.014 66);
+  --mm-brand: oklch(0.545 0.135 42);
+  --mm-brand-hover: oklch(0.482 0.128 42);
+  --mm-brand-active: oklch(0.428 0.118 42);
+  --mm-brand-soft: oklch(0.955 0.028 58);
+  --mm-brand-ink: oklch(0.432 0.125 42);
+  --mm-on-brand: oklch(0.995 0.004 78);
+  --mm-ok: oklch(0.502 0.095 150);
+  --mm-ok-soft: oklch(0.958 0.028 150);
+  --mm-ok-ink: oklch(0.402 0.082 150);
+  --mm-warn: oklch(0.622 0.118 80);
+  --mm-warn-soft: oklch(0.965 0.035 85);
+  --mm-warn-ink: oklch(0.435 0.095 70);
+  --mm-danger: oklch(0.545 0.165 27);
+  --mm-danger-soft: oklch(0.962 0.028 27);
+  --mm-danger-ink: oklch(0.452 0.150 27);
+  --mm-crtm-inter: oklch(0.520 0.075 215);
+  --mm-crtm-inter-soft: oklch(0.955 0.020 215);
+  --mm-crtm-inter-ink: oklch(0.420 0.070 215);
+  --mm-on-crtm-inter: oklch(0.995 0.004 78);
+  --mm-crtm-urban: oklch(0.500 0.095 315);
+  --mm-crtm-urban-soft: oklch(0.955 0.025 315);
+  --mm-crtm-urban-ink: oklch(0.410 0.090 315);
+  --mm-on-crtm-urban: oklch(0.995 0.004 78);
+  --mm-crtm-ml: oklch(0.520 0.080 160);
+  --mm-crtm-ml-soft: oklch(0.955 0.030 160);
+  --mm-crtm-ml-ink: oklch(0.420 0.075 160);
+  --mm-on-crtm-ml: oklch(0.995 0.004 78);
+  --mm-crtm-metro: oklch(0.480 0.110 264);
+  --mm-crtm-metro-soft: oklch(0.955 0.025 264);
+  --mm-crtm-metro-ink: oklch(0.400 0.100 264);
+  --mm-on-crtm-metro: oklch(0.995 0.004 78);
+  --mm-crtm-cercanias: oklch(0.540 0.150 350);
+  --mm-crtm-cercanias-soft: oklch(0.955 0.025 350);
+  --mm-crtm-cercanias-ink: oklch(0.440 0.130 350);
+  --mm-on-crtm-cercanias: oklch(0.995 0.004 78);
+  --mm-focus: oklch(0.618 0.120 42);
+  --mm-scrim: oklch(0.235 0.014 62 / 0.32);
+}
+
+/* ==========================================================================
+   Ancho del contenido (shell)
+   Escalonado, NO un único max-width: las filas de datos (línea · destino ·
+   ETA) se vuelven ilegibles estiradas, así que el contenedor crece a saltos
+   y el hueco que sobra en escritorio lo ocupa una segunda columna, no una
+   fila más ancha. Móvil y tablet se quedan en los 48rem de siempre.
+   --mm-shell-wide es para páginas-lienzo (mapa), donde no hay filas que
+   estirar y cada píxel suma.
+   ========================================================================== */
+:root {
+  --mm-shell: 48rem; /* 768 */
+  --mm-shell-wide: 48rem;
+}
+
+@media (width >= 64rem) {
+  :root {
+    --mm-shell: 60rem; /* 960 */
+    --mm-shell-wide: 72rem; /* 1152 */
+  }
+}
+
+@media (width >= 80rem) {
+  :root {
+    --mm-shell: 72rem; /* 1152 */
+    --mm-shell-wide: 88rem; /* 1408 */
+  }
+}
+
+@media (width >= 96rem) {
+  :root {
+    --mm-shell: 80rem; /* 1280 */
+    --mm-shell-wide: 100rem; /* 1600 */
+  }
+}
+
+/* <Layout wide>: la clase va en el <body>, así que cabecera, main y footer
+   heredan el ancho de golpe (todos leen max-w-(--mm-shell)) */
+.shell-wide {
+  --mm-shell: var(--mm-shell-wide);
+}
+
+/* ==========================================================================
+   Offset de lo pegajoso (escritorio)
+   --mm-sticky NO es donde arranca la caja pegajosa, sino la línea en la que
+   queda el CONTENIDO: el alto EXACTO de la cabecera, 3.5rem de min-h-14 + su
+   borde de 1px = 57 px, para que lo pegado siga al menú sin nada en medio. Se
+   probó con 4rem (un pelo de aire) y no cuela: el velo de la barra es del color
+   de la página, así que ese margen no se lee como parte de la barra sino como
+   un hueco entre el menú y el título. Los otros dos tokens son esa línea
+   corregida con lo que cada elemento lleva por dentro, y así el título de la
+   columna principal y el de la lateral caen exactamente a la misma altura:
+   - --mm-sticky-bar resta el lg:pt-2 de la barra de Próximos buses / Próximas
+     salidas, con lo que su caja arranca DETRÁS de la cabecera. Sin ese solape
+     quedaba una rendija por la que se veían pasar las filas de la lista, y el
+     título caía 8 px por debajo del de la lateral.
+   - --mm-sticky-aside resta el lg:mt-7 que BusMap y la caja de Líneas llevan
+     DENTRO; sticky respeta el margen del elemento, así que sin el descuento la
+     lateral se pegaba 28 px más abajo.
+   Los leen cinco sitios: las dos barras y las dos laterales de /parada y
+   /parada/crtm, más el raíl de filtros de /lineas — este último con
+   --mm-sticky a pelo, porque no lleva margen propio que descontar.
+   ========================================================================== */
+:root {
+  --mm-sticky: calc(3.5rem + 1px); /* 57 — la línea del contenido pegado: min-h-14 + borde */
+  --mm-sticky-bar: calc(var(--mm-sticky) - 0.5rem); /* 49 — menos su lg:pt-2 */
+  --mm-sticky-aside: calc(var(--mm-sticky) - 1.75rem); /* 29 — menos su lg:mt-7 */
+}
+
+@theme inline {
+  --font-sans: 'Public Sans', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+
+  --color-page: var(--mm-page);
+  --color-surface: var(--mm-surface);
+  --color-surface-2: var(--mm-surface-2);
+  --color-line: var(--mm-line);
+  --color-line-strong: var(--mm-line-strong);
+  --color-control-edge: var(--mm-control-edge);
+
+  --color-ink: var(--mm-ink);
+  --color-ink-2: var(--mm-ink-2);
+  --color-ink-3: var(--mm-ink-3);
+
+  --color-brand: var(--mm-brand);
+  --color-brand-hover: var(--mm-brand-hover);
+  --color-brand-active: var(--mm-brand-active);
+  --color-brand-soft: var(--mm-brand-soft);
+  --color-brand-ink: var(--mm-brand-ink);
+  --color-on-brand: var(--mm-on-brand);
+
+  --color-ok: var(--mm-ok);
+  --color-ok-soft: var(--mm-ok-soft);
+  --color-ok-ink: var(--mm-ok-ink);
+  --color-warn: var(--mm-warn);
+  --color-warn-soft: var(--mm-warn-soft);
+  --color-warn-ink: var(--mm-warn-ink);
+  --color-danger: var(--mm-danger);
+  --color-danger-soft: var(--mm-danger-soft);
+  --color-danger-ink: var(--mm-danger-ink);
+
+  --color-crtm-inter: var(--mm-crtm-inter);
+  --color-crtm-inter-soft: var(--mm-crtm-inter-soft);
+  --color-crtm-inter-ink: var(--mm-crtm-inter-ink);
+  --color-on-crtm-inter: var(--mm-on-crtm-inter);
+  --color-crtm-urban: var(--mm-crtm-urban);
+  --color-crtm-urban-soft: var(--mm-crtm-urban-soft);
+  --color-crtm-urban-ink: var(--mm-crtm-urban-ink);
+  --color-on-crtm-urban: var(--mm-on-crtm-urban);
+  --color-crtm-ml: var(--mm-crtm-ml);
+  --color-crtm-ml-soft: var(--mm-crtm-ml-soft);
+  --color-crtm-ml-ink: var(--mm-crtm-ml-ink);
+  --color-on-crtm-ml: var(--mm-on-crtm-ml);
+  --color-crtm-metro: var(--mm-crtm-metro);
+  --color-crtm-metro-soft: var(--mm-crtm-metro-soft);
+  --color-crtm-metro-ink: var(--mm-crtm-metro-ink);
+  --color-on-crtm-metro: var(--mm-on-crtm-metro);
+  --color-crtm-cercanias: var(--mm-crtm-cercanias);
+  --color-crtm-cercanias-soft: var(--mm-crtm-cercanias-soft);
+  --color-crtm-cercanias-ink: var(--mm-crtm-cercanias-ink);
+  --color-on-crtm-cercanias: var(--mm-on-crtm-cercanias);
+
+  --color-focus: var(--mm-focus);
+  --color-scrim: var(--mm-scrim);
+}
+
+/* Anillo de foco único para toda la app (teclado, no ratón) */
+@utility focus-ring {
+  &:focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+  }
+}
+
+/* Badges de red CRTM: color por data-network con contraste fijo
+   (nunca linecolors.ts — los labels CRTM colisionan con los EMT).
+   Metro ligero y metro: los chips de línea llevan ADEMÁS style inline con su
+   color oficial (API u mlLineColors/metroLineColors), que prevalece sobre este
+   tono de red. */
+.crtm-badge[data-network='interurban'] {
+  background: var(--color-crtm-inter);
+  color: var(--color-on-crtm-inter);
+}
+
+.crtm-badge[data-network='urban'] {
+  background: var(--color-crtm-urban);
+  color: var(--color-on-crtm-urban);
+}
+
+.crtm-badge[data-network='ml'] {
+  background: var(--color-crtm-ml);
+  color: var(--color-on-crtm-ml);
+}
+
+.crtm-badge[data-network='metro'] {
+  background: var(--color-crtm-metro);
+  color: var(--color-on-crtm-metro);
+}
+
+.crtm-badge[data-network='cercanias'] {
+  background: var(--color-crtm-cercanias);
+  color: var(--color-on-crtm-cercanias);
+}
+
+/* Pestañas de sentido de las fichas de línea (/linea y /linea/crtm): idénticas en ambas,
+   extraídas de sus <style> para no mantener dos copias. El estado activo se pinta por
+   aria-pressed, nunca alternando utilidades desde JS (el orden de la hoja de Tailwind
+   decidía y dejaba fondo/tinta cruzados). El color de cada sentido llega por --dir-a/--dir-b
+   declaradas inline en el wrapper de cada página. */
+.dir-tabs {
+  display: flex;
+  gap: 1.375rem;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--color-line);
+  scrollbar-width: none;
+}
+
+.dir-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.dir-btn {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.4375rem;
+  border-bottom: 2px solid transparent;
+  padding: 0.625rem 0 0.6875rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--color-ink-2);
+  transition:
+    color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.dir-btn:hover {
+  color: var(--color-ink);
+}
+
+.dir-btn[aria-pressed='true'] {
+  border-bottom-color: var(--color-ink);
+  font-weight: 700;
+  color: var(--color-ink);
+}
+
+/* ==========================================================================
+   Índice de grupos de /lineas (.group-filter)
+   Los MISMOS botones en dos formas, no dos juegos de marcado: fila que
+   envuelve hasta lg y raíl vertical de ahí para arriba. Van en clase propia
+   (como .crtm-badge) porque la variante de escritorio cambia casi todas las
+   propiedades y en utilidades salía una ristra de `max-lg:`/`lg:` que además
+   se pisaban entre sí al apilar `lg:` sobre `aria-pressed:`.
+   El estado lo lleva SIEMPRE aria-pressed, nunca clases desde el script.
+   Hasta lg todos los botones se dibujan con borde y fondo de superficie: sin
+   eso los inactivos se leían como texto suelto, no como controles.
+   ========================================================================== */
+.group-filter {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  border: 1px solid var(--color-line);
+  border-radius: 999px;
+  background: var(--color-surface);
+  padding: 0.375rem 0.75rem;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--color-ink-2);
+  transition:
+    color 0.15s,
+    background-color 0.15s,
+    border-color 0.15s;
+}
+
+.group-filter:hover {
+  border-color: var(--color-line-strong);
+  color: var(--color-ink);
+}
+
+.group-filter[aria-pressed='true'] {
+  border-color: var(--color-ink);
+  background: var(--color-ink);
+  color: var(--color-surface);
+}
+
+/* El punto de color y el recuento solo existen en el raíl: en la fila de
+   móvil suman ancho (y el punto oscuro desaparece sobre el activo en tinta) */
+.group-filter-dot,
+.group-filter-count {
+  display: none;
+}
+
+@media (width >= 64rem) {
+  .group-filter {
+    width: 100%;
+    gap: 0.625rem;
+    height: 1.875rem;
+    border: 0;
+    border-radius: 0.5rem;
+    background: transparent;
+    padding: 0 0.625rem;
+    font-size: 13px;
+    font-weight: 500;
+  }
+
+  .group-filter:hover {
+    background: var(--color-surface-2);
+    color: var(--color-ink);
+  }
+
+  .group-filter[aria-pressed='true'] {
+    background: var(--color-brand-soft);
+    color: var(--color-brand-ink);
+    font-weight: 700;
+  }
+
+  /* El aro no es decoración: los colores de línea son de la EMT/CRTM y los hay en los
+     dos extremos — el 050505 de los nocturnos se pierde sobre la página en oscuro y el
+     f1dd38 del exprés se pierde sobre ella en claro */
+  .group-filter-dot {
+    display: block;
+    width: 8px;
+    height: 8px;
+    flex: none;
+    border-radius: 2px;
+    box-shadow: 0 0 0 1px var(--color-line-strong);
+  }
+
+  .group-filter-count {
+    display: inline;
+    margin-left: auto;
+    font-size: 11.5px;
+    font-weight: 700;
+    color: var(--color-ink-3);
+  }
+
+  .group-filter[aria-pressed='true'] .group-filter-count {
+    color: inherit;
+  }
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    font-variant-numeric: tabular-nums;
+  }
+
+  ::selection {
+    background: var(--color-brand-soft);
+    color: var(--color-brand-ink);
+  }
+
+  a {
+    color: var(--color-brand-ink);
+  }
+
+  a:hover {
+    color: var(--color-brand);
+  }
+
+  /* Leaflet: ver la sección sin capa al final del fichero (aquí dentro pierde
+     siempre contra el css propio de Leaflet, que se importa sin capa) */
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+/* Leaflet: encajar el mapa en el sistema visual. FUERA de @layer base a propósito:
+   el css de Leaflet (leaflet.css) se importa sin capa y en la cascada de capas lo
+   SIN capa gana a cualquier capa, así que dentro de base estas reglas perdían
+   siempre y el popup y los zoom quedaban blancos incluso en oscuro. El prefijo
+   `html` refuerza la especificidad por si el orden de bundling se invierte. */
+html .leaflet-container {
+  background: var(--color-surface-2);
+  font-family: var(--font-sans);
+}
+
+html .leaflet-container .leaflet-popup-content-wrapper,
+html .leaflet-container .leaflet-popup-tip {
+  background: var(--color-surface);
+  color: var(--color-ink);
+  border-radius: 0.5rem;
+  box-shadow: 0 8px 24px -12px oklch(0.2 0.02 60 / 0.35);
+}
+
+html .leaflet-container .leaflet-popup-content {
+  margin: 0.75rem 0.875rem;
+  line-height: 1.45;
+}
+
+html .leaflet-container .leaflet-popup-content a {
+  color: var(--color-brand-ink);
+}
+
+html .leaflet-container .leaflet-bar a,
+html .leaflet-container .leaflet-control-attribution {
+  background: var(--color-surface);
+  color: var(--color-ink-2);
+  border-color: var(--color-line);
+}
+
+/* Los enlaces de la atribución traen #0078a8 del css de Leaflet: sobre la superficie
+   oscura queda en 3.4:1 — heredan la tinta del contenedor en ambos temas */
+html .leaflet-container .leaflet-control-attribution a {
+  color: inherit;
+}
+
+html .leaflet-container .leaflet-bar a:hover {
+  background: var(--color-surface-2);
+  color: var(--color-ink);
+}
+
+@media (prefers-color-scheme: dark) {
+  html .leaflet-container .leaflet-tile {
+    filter: invert(1) hue-rotate(180deg) brightness(0.92) contrast(0.9) saturate(0.7);
+  }
+}
+
+html.dark .leaflet-container .leaflet-tile {
+  filter: invert(1) hue-rotate(180deg) brightness(0.92) contrast(0.9) saturate(0.7);
+}

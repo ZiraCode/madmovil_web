@@ -1,0 +1,93 @@
+---
+import { translator } from '../lib/i18n';
+import 'leaflet/dist/leaflet.css';
+
+interface Props {
+  stopId: string;
+  stopName: string;
+  latitude: number;
+  longitude: number;
+}
+
+const { stopId, stopName, latitude, longitude } = Astro.props;
+const tr = translator(Astro.locals.locale ?? 'es');
+---
+
+{/* En ≥lg vive en la columna lateral: arranca a la altura de las llegadas (mt-7, no mt-8) y
+    crece a lo alto. El hueco de escritorio se lo lleva el mapa, nunca las filas de datos */}
+<section class="mt-8 lg:mt-7" aria-label={tr('busMap.aria')}>
+  <h2 class="mb-2.5 text-[17px] font-bold tracking-tight">{tr('busMap.heading')}</h2>
+  <div
+    id="bus-map"
+    class="h-60 overflow-hidden rounded-xl border border-line bg-surface-2 shadow-xs lg:h-[34rem] xl:h-[36rem]"
+    data-lat={latitude}
+    data-lon={longitude}
+    data-stop-name={stopName}
+    data-stop-id={stopId}
+    aria-label={tr('busMap.mapAria')}
+  >
+  </div>
+  <p class="mt-2 text-[11.5px] text-ink-3">{tr('busMap.note')}</p>
+</section>
+
+<script>
+  import L from 'leaflet';
+  import { escapeHtml, stopRefLabel } from '../lib/cards';
+  import { clientLocale, t } from '../lib/i18n';
+  import type { BusArrival } from '../types/api';
+
+  const locale = clientLocale();
+  const container = document.getElementById('bus-map') as HTMLElement | null;
+
+  if (container) {
+    const lat = Number(container.dataset.lat);
+    const lon = Number(container.dataset.lon);
+    const stopName = container.dataset.stopName ?? '';
+    const stopId = container.dataset.stopId ?? '';
+
+    const map = L.map(container).setView([lat, lon], 15);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    }).addTo(map);
+
+    L.circleMarker([lat, lon], {
+      radius: 9,
+      color: '#ffffff',
+      weight: 3,
+      fillColor: '#8a4a2b',
+      fillOpacity: 1,
+    })
+      .bindPopup(`<strong>${escapeHtml(stopName)}</strong><br/><span class="text-xs text-ink-3">${escapeHtml(stopRefLabel(locale, stopId))}</span>`)
+      .addTo(map)
+      .openPopup();
+
+    const busLayer = L.layerGroup().addTo(map);
+
+    function updateBuses(arrivals: BusArrival[]): void {
+      const withPosition = arrivals.filter((a) => a.busPosition);
+      busLayer.clearLayers();
+      for (const a of withPosition) {
+        L.marker([a.busPosition!.latitude, a.busPosition!.longitude], {
+          icon: L.divIcon({
+            className: '',
+            html: `<span class="grid min-w-8 place-items-center rounded-md border-2 border-surface bg-ink px-1 text-xs font-bold text-surface shadow-md">${escapeHtml(a.line)}</span>`,
+            iconSize: [30, 22],
+            iconAnchor: [15, 11],
+          }),
+        })
+          .bindPopup(
+            `<strong>${t(locale, 'line.ref', { label: escapeHtml(a.line) })}</strong> → ${escapeHtml(a.destination)}<br/>` +
+              (a.arrivesInMin === null
+                ? `<span class="text-xs text-ink-3">${t(locale, 'busMap.over45')}</span>`
+                : `<span class="text-xs text-ink-3">${t(locale, 'eta.inMin', { min: a.arrivesInMin })} · ${t(locale, 'map.away', { m: a.distanceM })}</span>`)
+          )
+          .addTo(busLayer);
+      }
+    }
+
+    window.addEventListener('arrivals:data', (event) => {
+      updateBuses((event as CustomEvent<BusArrival[]>).detail);
+    });
+  }
+</script>

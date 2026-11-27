@@ -1,0 +1,46 @@
+# Politica de crawlers de IA (2026-10-28): AI Crawl Control de Cloudflare
+# DESACTIVADO por completo (sus presets bloqueaban en el edge al bingbot-Chrome
+# -clasificado como entrenamiento- y sus bloqueos de busqueda llegaron a tumbar
+# al Googlebot movil; auditoria completa en PLAN.md); la politica vive SOLO en
+# este fichero. Los de BUSQUEDA/asistente PERMITIDOS arriba (User-agent: *
+# Allow): citan y enlazan -> visitas (OAI-SearchBot, ChatGPT-User,
+# PerplexityBot/Perplexity-User, Claude-SearchBot, Claude-Web, Applebot...).
+# Los de ENTRENAMIENTO siguen bloqueados aqui; respetan robots.txt por diseno
+# (no necesitan bloqueo en el edge):
+User-agent: ClaudeBot
+Disallow: /
+
+User-agent: anthropic-ai
+Disallow: /
+
+User-agent: GPTBot
+Disallow: /
+
+User-agent: Google-Extended
+Disallow: /
+
+User-agent: CCBot
+Disallow: /
+
+User-agent: bytespider
+Disallow: /
+
+User-agent: FacebookBot
+Disallow: /
+
+User-agent: Amazonbot
+Disallow: /
+
+User-agent: Applebot-Extended
+Disallow: /
+
+User-agent: meta-externalagent
+Disallow: /
+
+User-agent: *
+Allow: /
+
+Sitemap: https://www.madmovil.es/sitemap-index.xml
+Sitemap: https://www.madmovil.es/sitemap-lineas.xml
+Sitemap: https://www.madmovil.es/sitemap-paradas-emt.xml
+Sitemap: https://www.madmovil.es/sitemap-paradas-crtm.xml

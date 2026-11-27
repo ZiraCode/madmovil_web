@@ -1,0 +1,68 @@
+---
+import Legal from '../../layouts/Legal.astro';
+import { href } from '../../lib/i18n';
+
+export const prerender = true;
+
+Astro.locals.locale = 'en';
+
+const favoritesUrl = href('/favoritos', 'en');
+---
+
+<Legal title="Cookie policy" updated="August 2026">
+  <p>
+    This website does not show cookie banners because there is nothing to accept: <strong>we use no cookies or equivalent
+    technologies for analytics, advertising, audience measurement or tracking</strong>. The only storage we use is strictly
+    necessary for the website to work, and is therefore exempt from consent under Article 22.2 of Spanish Law 34/2002 (LSSI-CE) and the criteria of the Spanish DPA
+    and the GTICO.
+  </p>
+
+  <h2>1. Storage used by this site</h2>
+  <ul>
+    <li>
+      <strong>Theme preference</strong> — <code>localStorage: madmovil:theme</code>. Stores whether you prefer
+      the light or dark theme. Only your browser reads it.
+    </li>
+    <li>
+      <strong>Language preference</strong> — <code>localStorage: madmovil:locale</code>. Remembers the language
+      chosen in the selector (the language of each page is determined by its URL, not by this value).
+    </li>
+    <li>
+      <strong>Favourites</strong> — <code>localStorage: madmovil:favorites</code>. Your favourite stops are
+      stored only on your device.
+    </li>
+    <li>
+      <strong>Favourites sync (optional)</strong> — <code>localStorage/sessionStorage: madmovil:vault</code> and <code>madmovil:vault-status</code>. If you
+      enable sync, the sync code is stored only if you tick
+      “remember on this device”; otherwise it lives in session storage and is deleted when the browser closes.
+    </li>
+    <li>
+      <strong>Query caches</strong> — <code>localStorage: madmovil:stopnames</code>, <code>madmovil:stopaddresses</code>, <code>madmovil:stoplines</code> and
+      their counterparts (<code>crtm*</code>, <code>linecolors</code>). Local copies of public data (stop names, addresses and
+      lines, line colours) to avoid repeating requests. They contain no personal data.
+    </li>
+  </ul>
+  <p>
+    All of the above is installed only when you need it as a user (theme, language, favourites or sync) and is
+    not used to track or identify you across sites.
+  </p>
+
+  <h2>2. How to delete this data</h2>
+  <ul>
+    <li>
+      From your browser: “Clear browsing data” → cookies and other site data. You can also delete <code>madmovil.es</code> data
+      individually in the site settings.
+    </li>
+    <li>
+      Favourites are removed from the site itself (the star on each stop or the <a href={favoritesUrl}>Favourites</a> page), and the
+      remote sync copy with the “Delete remote copy” button.
+    </li>
+  </ul>
+
+  <h2>3. Future changes</h2>
+  <p>
+    If in the future we added any cookie or storage that is not strictly necessary (for example, aggregate
+    statistics), we would ask for your prior consent through a banner with clear options and would update this
+    policy.
+  </p>
+</Legal>

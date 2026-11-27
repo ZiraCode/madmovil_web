@@ -1,0 +1,21 @@
+---
+import NotFound from '../components/NotFound.astro';
+
+// Catch-all 404 (Fase 8D): en Astro 7, una URL que NO casa con ninguna ruta se sirve
+// como el 404.html prerenderizado SIN pasar por el middleware (errors/default-handler),
+// así que ni el rewrite de /en ni el 308 de /es corrían en producción. Con esta página,
+// toda navegación sin ruta casa AQUÍ, el middleware corre (locale, rewrite, rate limit)
+// y las que no eran nada terminan en un 404 SSR locale-aware con status 404.
+// Las rutas más específicas (todas) tienen prioridad sobre el rest param.
+export const prerender = false;
+
+// Peticiones con extensión (p. ej. /favicon.ico caído, /foo.png): 404 plano, sin HTML
+const slug = Astro.params.slug ?? '';
+if (slug.split('/').pop()?.includes('.')) {
+  return new Response('Not found', { status: 404 });
+}
+
+Astro.response.status = 404;
+---
+
+<NotFound />

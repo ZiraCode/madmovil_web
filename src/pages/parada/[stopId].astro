@@ -1,0 +1,244 @@
+---
+import Layout from '../../layouts/Layout.astro';
+import ArrivalsBoard from '../../components/ArrivalsBoard.astro';
+import BusMap from '../../components/BusMap.astro';
+import ErrorState from '../../components/ErrorState.astro';
+import FavoriteButton from '../../components/FavoriteButton.astro';
+import FavoriteLines from '../../components/FavoriteLines.astro';
+import StopTransfers from '../../components/StopTransfers.astro';
+import { getConnections, getStopDetail, mapApiError } from '../../lib/api';
+import { href, t, translator } from '../../lib/i18n';
+import { busStopJsonLd, jsonLdHtml, pageUrl } from '../../lib/seo';
+import type { StopDetail, StopLineInfo } from '../../types/api';
+import type { ConnectionsData } from '../../types/connections';
+
+export const prerender = false;
+
+const locale = Astro.locals.locale ?? 'es';
+const tr = translator(locale);
+const stopId = Astro.params.stopId ?? '';
+
+let stop: StopDetail | null = null;
+let notFound = false;
+let emtDown = false;
+
+if (!/^\d+$/.test(stopId)) {
+  notFound = true;
+  Astro.response.status = 404;
+} else {
+  try {
+    stop = await getStopDetail(stopId);
+  } catch (e) {
+    const failure = mapApiError(e);
+    if (failure.notFound) notFound = true;
+    if (failure.down) emtDown = true;
+    Astro.response.status = failure.status;
+  }
+}
+
+// Transbordos (/connections): fail-soft total — 503/429/error solo ocultan la sección
+const transfersPromise: Promise<ConnectionsData | null> = stop ? getConnections('emt', stopId).catch(() => null) : Promise.resolve(null);
+
+// W3 (auditoría CPU 2026-11-24): el tablón de llegadas ya NO se fetchea en SSR. La
+// respuesta es no-store (cero caché: una invocación del server por render Y una llamada
+// a EMT arrives por cada crawler que pisara la ficha, con su latencia de 0,3-2 s al TTFB);
+// el board ya refrescaba client-side y ahora su fetch inicial también lo es (loading)
+
+// count 0 (parada de calle aislada) = sección oculta, no error
+const transfers = (await transfersPromise) ?? null;
+
+// HTML cacheable en edge (favoritos, llegadas y refrescos son client-side desde W3);
+// s-maxage 3600 (W2, auditoría CPU 2026-11-27): el detalle y los transbordos ya viajan a
+// 3600 en el CDN del API, así que 1 h de HTML es coherente. Solo en 200: los 404/503/502
+// no se cachean
+if (stop) {
+  Astro.response.headers.set('Cache-Control', 'public, max-age=60, s-maxage=3600');
+}
+
+const dayTypeLabel: Record<string, string> = {
+  LA: tr('day.weekday'),
+  SA: tr('day.saturday'),
+  FE: tr('day.holiday'),
+};
+
+// Datos del raíl de la cabecera. Salen de stop.lines, que ya pedimos: hasta ahora solo se
+// veían desmenuzados en la tabla de frecuencias del final.
+// OJO con los nocturnos: las líneas N* arrancan a las 00:00, así que el mínimo de startTime
+// sobre TODAS las líneas da siempre 00:00 y la franja quedaría como "servicio 24 h".
+// Por eso van en dos franjas separadas.
+// La API puede devolver la misma línea por cada sentido: se deduplica por label para que
+// el recuento no salga inflado.
+const uniqueLines: StopLineInfo[] = stop ? [...new Map(stop.lines.map((l) => [l.label, l])).values()] : [];
+const nightLines = uniqueLines.filter((l) => /^N/i.test(l.label));
+const dayLines = uniqueLines.filter((l) => !/^N/i.test(l.label));
+
+function serviceSpan(ls: StopLineInfo[]): string | null {
+  const starts = ls.map((l) => l.startTime).filter(Boolean).sort();
+  const ends = ls.map((l) => l.stopTime).filter(Boolean).sort();
+  return starts.length > 0 && ends.length > 0 ? `${starts[0]}–${ends[ends.length - 1]}` : null;
+}
+
+const daySpan = serviceSpan(dayLines);
+const nightSpan = serviceSpan(nightLines);
+const dayTypeToday = uniqueLines[0]?.dayType ?? null;
+
+// SEO: parada con id + nombre + "horarios" (queries tipo "parada 62 horarios")
+const stopJsonLd = stop
+  ? jsonLdHtml(
+      busStopJsonLd({
+        name: stop.name,
+        url: pageUrl(`/parada/${encodeURIComponent(stopId)}`, locale),
+        lat: stop.coordinates.latitude,
+        lon: stop.coordinates.longitude,
+        municipality: 'Madrid',
+      })
+    )
+  : null;
+---
+
+<script>
+  import { paintAndFetchLineColors } from '../../lib/linecolors';
+
+  void paintAndFetchLineColors();
+</script>
+
+<Layout
+  title={stop ? t(locale, 'stop.seoTitle', { id: stopId, name: stop.name }) : t(locale, 'error.stopNotFoundTitle')}
+  description={stop ? t(locale, 'stop.seoDescription', { name: stop.name, id: stopId }) : undefined}
+>
+  {stopJsonLd && <script type="application/ld+json" set:html={stopJsonLd} />}
+  {
+    notFound ? (
+      <ErrorState
+        tone="neutral"
+        title={t(locale, 'error.stopNotFoundTitle')}
+        body={t(locale, 'error.stopNotFoundBody', { code: stopId })}
+        action={{ path: '/', label: t(locale, 'error.searchOtherStop') }}
+      />
+    ) : emtDown ? (
+      <ErrorState
+        tone="warn"
+        title={t(locale, 'error.emtDownTitle')}
+        body={t(locale, 'error.emtDownBody', { code: stopId })}
+        retry
+        action={{ path: '/', label: t(locale, 'error.backHome') }}
+      />
+    ) : !stop ? (
+      <ErrorState
+        tone="danger"
+        title={t(locale, 'error.loadStopTitle')}
+        body={t(locale, 'error.tryAgainSoon')}
+        action={{ path: '/', label: t(locale, 'error.backHome') }}
+      />
+    ) : (
+      <>
+        {/* Cabecera en losa cálida, igual que el buscador de la home. La rejilla replica la del
+            cuerpo (más abajo) para que el raíl derecho caiga sobre el mapa y la página se lea a
+            dos columnas de arriba abajo. Las anchuras son las del cuerpo MENOS 1.25rem (el px-5
+            de la losa): así el borde IZQUIERDO del raíl cae clavado en el del mapa; por la
+            derecha queda el padding de la losa, que se lee como lo que es. Con 22/26rem a secas
+            el raíl salía 20 px desplazado a la izquierda y parecía un fallo de alineación.
+            En móvil y tablet vuelve a ser lo de siempre: título, botón a la derecha y chips. */}
+        <section class="rounded-2xl bg-brand-soft px-4 py-4 sm:px-5 sm:py-5">
+          <div class="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3 lg:grid-cols-[minmax(0,1fr)_20.75rem] lg:gap-x-8 xl:grid-cols-[minmax(0,1fr)_24.75rem]">
+            <div class="min-w-0">
+              <p class="text-[11px] font-bold uppercase tracking-[0.14em] text-brand-ink">{t(locale, 'stop.ref', { id: stop.stopId })}</p>
+              <h1 class="mt-1 text-2xl font-bold leading-[1.15] tracking-tight text-pretty">{stop.name}</h1>
+              <p class="mt-1 text-[13px] text-ink-2">{stop.postalAddress}</p>
+            </div>
+
+            {/* row-span-2 solo en lg: así los datos cuelgan del botón y no de los chips */}
+            <div class="lg:row-span-2">
+              <FavoriteButton stopId={stop.stopId} stopName={stop.name} />
+
+              {/* Solo escritorio: en móvil no hay sitio y el detalle ya está en "Líneas y frecuencias" */}
+              <dl class="hidden lg:mt-4 lg:grid lg:gap-2.5 lg:border-t lg:border-brand-ink/15 lg:pt-4">
+                <div class="flex items-baseline justify-between gap-3">
+                  <dt class="text-[11px] font-bold uppercase tracking-[0.1em] text-brand-ink">{tr('stop.linesLabel')}</dt>
+                  <dd class="text-[13.5px] font-semibold tabular-nums text-ink">
+                    {uniqueLines.length}
+                    {nightLines.length > 0 && ` · ${t(locale, 'stop.dayNight', { day: dayLines.length, night: nightLines.length })}`}
+                  </dd>
+                </div>
+                {daySpan && (
+                  <div class="flex items-baseline justify-between gap-3">
+                    <dt class="text-[11px] font-bold uppercase tracking-[0.1em] text-brand-ink">
+                      {nightLines.length > 0 ? tr('stop.daySpan') : tr('stop.serviceSpan')}
+                    </dt>
+                    <dd class="text-[13.5px] font-semibold tabular-nums text-ink">{daySpan}</dd>
+                  </div>
+                )}
+                {nightSpan && (
+                  <div class="flex items-baseline justify-between gap-3">
+                    <dt class="text-[11px] font-bold uppercase tracking-[0.1em] text-brand-ink">{tr('stop.nightSpan')}</dt>
+                    <dd class="text-[13.5px] font-semibold tabular-nums text-ink">{nightSpan}</dd>
+                  </div>
+                )}
+                {dayTypeToday && (
+                  <div class="flex items-baseline justify-between gap-3">
+                    <dt class="text-[11px] font-bold uppercase tracking-[0.1em] text-brand-ink">{tr('time.today')}</dt>
+                    <dd class="text-[13.5px] font-semibold text-ink">{dayTypeLabel[dayTypeToday] ?? dayTypeToday}</dd>
+                  </div>
+                )}
+              </dl>
+            </div>
+
+            <div class="col-span-2 lg:col-span-1">
+              <FavoriteLines stopId={stop.stopId} labels={stop.lines.map((l) => l.label)} />
+            </div>
+          </div>
+        </section>
+
+        {/* Escritorio (≥lg): llegadas y líneas en la columna principal, mapa en la lateral pegajosa.
+            Ninguna fila pasa de ~800 px, así que destino y ETA siguen juntos; el ancho que sobra en
+            1920 se lo lleva el mapa en vez de estirar la lista. items-start es lo que permite el sticky */}
+        <div class="lg:grid lg:grid-cols-[minmax(0,1fr)_22rem] lg:items-start lg:gap-8 xl:grid-cols-[minmax(0,1fr)_26rem]">
+          <div>
+            <ArrivalsBoard stopId={stop.stopId} loading />
+
+            <section class="mt-8" aria-label={tr('stop.linesAria')}>
+              <h2 class="mb-2.5 text-[17px] font-bold tracking-tight">{tr('stop.linesHeading')}</h2>
+              {/* Frecuencia como texto en columna fija: la pastilla competía con los tiempos reales */}
+              <ul class="divide-y divide-line overflow-hidden rounded-xl border border-line bg-surface shadow-xs">
+                {stop.lines.map((l) => {
+                  const header = l.direction === 'A' ? l.headerA : l.headerB;
+                  return (
+                    <li>
+                      <a
+                        href={href(`/linea/${l.label}`, locale)}
+                        class="flex items-center gap-3 px-3 py-2.5 transition hover:bg-surface-2 active:bg-surface-2 focus-ring"
+                        title={t(locale, 'line.viewLine', { label: l.label })}
+                      >
+                        <span
+                          class="grid h-7 min-w-[34px] shrink-0 place-items-center rounded-md px-1.5 bg-ink text-[13px] font-bold tabular-nums text-surface"
+                          data-line={l.label}
+                        >
+                          {l.label}
+                        </span>
+                        <span class="min-w-0 flex-1">
+                          <span class="block truncate text-[13.5px] font-semibold text-ink">{header}</span>
+                          <span class="block text-[11px] tabular-nums text-ink-3">
+                            {l.startTime}–{l.stopTime} · {dayTypeLabel[l.dayType] ?? l.dayType}
+                          </span>
+                        </span>
+                        <span class="shrink-0 whitespace-nowrap text-[11.5px] font-semibold tabular-nums text-ink-2">
+                          {t(locale, 'freq.range', { min: l.minFreq, max: l.maxFreq })}
+                        </span>
+                      </a>
+                    </li>
+                  );
+                })}
+              </ul>
+            </section>
+
+            {transfers && transfers.transfers.count > 0 && <StopTransfers data={transfers} />}
+          </div>
+
+          <aside class="lg:sticky lg:top-(--mm-sticky-aside)">
+            <BusMap stopId={stop.stopId} stopName={stop.name} latitude={stop.coordinates.latitude} longitude={stop.coordinates.longitude} />
+          </aside>
+        </div>
+      </>
+    )
+  }
+</Layout>

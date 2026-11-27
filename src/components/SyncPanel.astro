@@ -1,0 +1,499 @@
+---
+// Panel de sincronización de favoritos (F2, /favoritos): vault anónimo cifrado E2E.
+// Sin código activo: crear (Turnstile invisible) o introducir; con código: estado y
+// acciones (Sincronizar ahora / Olvidar aquí / Borrar copia remota). El código se
+// muestra UNA vez tras crear (copiar + QR #sync=). Vive en componente propio porque la
+// página solo conserva la lista: tras activar un código pide el re-render de la lista
+// con el evento 'favorites:reload' (la página es la única que sabe renderizarla).
+// Contiene además los 3 <dialog> de la página (QR de backup, escaneo y código de sync):
+// los IDs NO cambian, y lib/favbackup los localiza por getElementById igual que antes.
+import { translator } from '../lib/i18n';
+
+const locale = Astro.locals.locale ?? 'es';
+const tr = translator(locale);
+---
+
+<details
+  id="sync-section"
+  class="group mt-4 rounded-lg border border-line bg-surface shadow-xs lg:max-w-2xl"
+  aria-labelledby="sync-title"
+>
+  <summary class="flex cursor-pointer list-none items-center gap-2 px-4 py-4 focus-ring">
+    <h2 id="sync-title" class="flex-1 text-sm font-bold text-ink">{tr('sync.title')}</h2>
+    {/* El resumen del estado del vault visible SIN abrir: lo escribe renderSync */}
+    <span id="sync-summary-status" class="min-w-0 truncate text-xs font-medium text-ink-3" hidden></span>
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke-width="1.5"
+      stroke="currentColor"
+      class="size-4 shrink-0 text-ink-3 transition group-open:rotate-180"
+      aria-hidden="true"
+    >
+      <path stroke-linecap="round" stroke-linejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
+    </svg>
+  </summary>
+  <div class="px-4 pb-4">
+    <p class="text-xs text-pretty text-ink-3">
+      {tr('sync.body')}
+    </p>
+    <ul class="mt-2 space-y-1 text-xs text-pretty text-ink-3">
+      <li>{tr('sync.warnLost')}</li>
+      <li>{tr('sync.warnExpiry')}</li>
+    </ul>
+
+    {/* Vista de arranque (sin código activo) */}
+    <div id="sync-setup">
+      <div class="mt-3 flex flex-wrap gap-2">
+        <button
+          type="button"
+          id="sync-create"
+          class="rounded-md bg-brand px-3 py-2 text-xs font-semibold text-on-brand shadow-xs transition hover:bg-brand-hover active:bg-brand-active focus-ring"
+          >{tr('sync.create')}</button
+        >
+        <button
+          type="button"
+          id="sync-enter-toggle"
+          class="rounded-md border border-control-edge bg-surface px-3 py-2 text-xs font-semibold text-ink-2 transition hover:bg-surface-2 active:bg-surface-2 focus-ring"
+          >{tr('sync.enter')}</button
+        >
+      </div>
+      <form id="sync-enter-form" class="mt-3 hidden" novalidate>
+        <label for="sync-code-input" class="block text-xs font-semibold text-ink">{tr('sync.codeLabel')}</label>
+        <input
+          id="sync-code-input"
+          name="sync-code"
+          type="text"
+          autocomplete="off"
+          spellcheck="false"
+          autocapitalize="characters"
+          placeholder={tr('sync.codePlaceholder')}
+          aria-describedby="sync-enter-error"
+          class="mt-1.5 w-full max-w-md rounded-md border border-control-edge bg-surface px-3 py-2 font-mono text-sm uppercase tracking-wider text-ink shadow-xs outline-none transition placeholder:text-ink-3 hover:border-ink-3 focus:border-brand focus:ring-2 focus:ring-brand/25"
+        />
+        <label class="mt-2 flex items-start gap-2 text-xs text-ink-2">
+          <input id="sync-remember" type="checkbox" checked class="mt-0.5 size-3.5 accent-brand" />
+          <span>{tr('sync.remember')} <span class="text-ink-3">{tr('sync.rememberHint')}</span></span>
+        </label>
+        <button
+          type="submit"
+          id="sync-activate-btn"
+          class="mt-3 rounded-md border border-control-edge bg-surface px-3 py-2 text-xs font-semibold text-ink-2 transition hover:bg-surface-2 active:bg-surface-2 focus-ring"
+          >{tr('sync.activate')}</button
+        >
+        <p id="sync-enter-error" class="mt-2 hidden text-xs font-medium text-danger-ink" role="alert"></p>
+      </form>
+    </div>
+
+    {/* Vista activa (código guardado o de sesión) */}
+    <div id="sync-active" class="hidden">
+      <p id="sync-status-line" class="mt-3 text-xs text-ink-2" role="status"></p>
+      <div class="mt-3 flex flex-wrap gap-2">
+        <button
+          type="button"
+          id="sync-now"
+          class="rounded-md border border-control-edge bg-surface px-3 py-2 text-xs font-semibold text-ink-2 transition hover:bg-surface-2 active:bg-surface-2 focus-ring"
+          >{tr('sync.syncNow')}</button
+        >
+        <button
+          type="button"
+          id="sync-forget"
+          class="rounded-md border border-control-edge bg-surface px-3 py-2 text-xs font-semibold text-ink-2 transition hover:bg-surface-2 active:bg-surface-2 focus-ring"
+          >{tr('sync.forget')}</button
+        >
+        <button
+          type="button"
+          id="sync-delete-remote"
+          class="rounded-md border border-danger bg-surface px-3 py-2 text-xs font-semibold text-danger-ink transition hover:bg-danger-soft active:bg-danger-soft focus-ring"
+          >{tr('sync.deleteRemote')}</button
+        >
+      </div>
+    </div>
+
+    {/* Widget invisible de Turnstile (se renderiza aquí al crear). Sin display:none:
+        si Cloudflare decide mostrar un reto interactivo tiene dónde pintarse */}
+    <div id="sync-turnstile" class="mt-3 max-w-xs empty:hidden"></div>
+  </div>
+</details>
+
+<dialog
+  id="backup-qr-dialog"
+  class="w-full max-w-sm rounded-xl border border-line bg-surface p-5 shadow-xl backdrop:bg-scrim/70"
+  aria-labelledby="backup-qr-dialog-title"
+>
+  <h3 id="backup-qr-dialog-title" class="text-sm font-bold text-ink">{tr('backup.qrDialogTitle')}</h3>
+  {/* SVG del QR en una sola pieza blanca (escáners): el path negro viene del propio SVG */}
+  <div id="backup-qr-holder" class="mx-auto mt-4 w-full max-w-64 overflow-hidden rounded-lg bg-white [&>svg]:block [&>svg]:h-auto [&>svg]:w-full"></div>
+  <p class="mt-4 text-xs text-pretty text-ink-3">{tr('backup.qrHint')}</p>
+  <div class="mt-4 flex justify-end">
+    <button
+      type="button"
+      data-dialog-close
+      class="rounded-md border border-control-edge bg-surface px-3 py-2 text-xs font-semibold text-ink-2 transition hover:bg-surface-2 active:bg-surface-2 focus-ring"
+      >{tr('backup.close')}</button
+    >
+  </div>
+</dialog>
+
+<dialog
+  id="backup-scan-dialog"
+  class="w-full max-w-sm rounded-xl border border-line bg-surface p-5 shadow-xl backdrop:bg-scrim/70"
+  aria-labelledby="backup-scan-dialog-title"
+>
+  <h3 id="backup-scan-dialog-title" class="text-sm font-bold text-ink">{tr('backup.scanQr')}</h3>
+  <video id="backup-scan-video" class="mt-4 aspect-square w-full rounded-lg bg-ink object-cover" playsinline muted></video>
+  <p class="mt-3 text-xs text-pretty text-ink-3">{tr('backup.scanHint')}</p>
+  <div class="mt-4 flex justify-end">
+    <button
+      type="button"
+      data-dialog-close
+      class="rounded-md border border-control-edge bg-surface px-3 py-2 text-xs font-semibold text-ink-2 transition hover:bg-surface-2 active:bg-surface-2 focus-ring"
+      >{tr('backup.close')}</button
+    >
+  </div>
+</dialog>
+
+{/* Código de sincronización mostrado UNA vez tras crear el vault */}
+<dialog
+  id="sync-code-dialog"
+  class="w-full max-w-sm rounded-xl border border-line bg-surface p-5 shadow-xl backdrop:bg-scrim/70"
+  aria-labelledby="sync-code-dialog-title"
+>
+  <h3 id="sync-code-dialog-title" class="text-sm font-bold text-ink">{tr('sync.codeDialogTitle')}</h3>
+  <p class="mt-1.5 rounded-md bg-warn-soft px-3 py-2 text-xs font-semibold text-pretty text-warn-ink">
+    {tr('sync.onceWarning')}
+  </p>
+  <p
+    id="sync-code-value"
+    class="mt-4 break-all text-center font-mono text-lg font-bold tracking-wider text-ink"
+    aria-label={tr('sync.codeLabel')}
+    >XXXX-XXXX-XXXX-XXXX-XXXX-XXXX</p
+  >
+  <div class="mt-4 flex flex-wrap justify-center gap-2">
+    <button
+      type="button"
+      id="sync-code-copy"
+      class="rounded-md bg-brand px-3 py-2 text-xs font-semibold text-on-brand shadow-xs transition hover:bg-brand-hover active:bg-brand-active focus-ring"
+      >{tr('sync.copy')}</button
+    >
+    <button
+      type="button"
+      id="sync-code-qr"
+      class="rounded-md border border-control-edge bg-surface px-3 py-2 text-xs font-semibold text-ink-2 transition hover:bg-surface-2 active:bg-surface-2 focus-ring"
+      >{tr('backup.qr')}</button
+    >
+  </div>
+  <div id="sync-qr-holder" class="mx-auto mt-4 hidden w-full max-w-64 overflow-hidden rounded-lg bg-white [&>svg]:block [&>svg]:h-auto [&>svg]:w-full"></div>
+  <p id="sync-qr-hint" class="mt-3 hidden text-center text-xs text-pretty text-ink-3">{tr('sync.qrHint')}</p>
+  <label class="mt-4 flex items-start gap-2 text-xs text-ink-2">
+    <input id="sync-code-remember" type="checkbox" checked class="mt-0.5 size-3.5 accent-brand" />
+    <span>{tr('sync.remember')} <span class="text-ink-3">{tr('sync.rememberHint')}</span></span>
+  </label>
+  <div class="mt-4 flex justify-end">
+    <button
+      type="button"
+      data-dialog-close
+      class="rounded-md border border-control-edge bg-surface px-3 py-2 text-xs font-semibold text-ink-2 transition hover:bg-surface-2 active:bg-surface-2 focus-ring"
+      >{tr('backup.close')}</button
+    >
+  </div>
+</dialog>
+
+<script>
+  import { TURNSTILE_SITEKEY } from '../lib/config';
+  import {
+    activeCode,
+    activateVault,
+    createVaultWithTurnstile,
+    deactivateVault,
+    deleteRemoteVault,
+    formatSecret,
+    loadTurnstile,
+    normalizeSecret,
+    readVaultStatus,
+    storeCode,
+    syncNow,
+    type TurnstileApi,
+  } from '../lib/vault';
+  import { qrSvg } from '../lib/qr';
+  import { showBackupFeedback } from '../lib/favbackup';
+  import { clientLocale, href, t, type MessageKey } from '../lib/i18n';
+
+  const locale = clientLocale();
+
+  // La lista de favoritos vive en la página: pedir su recarga tras una activación
+  function reloadFavorites(): void {
+    window.dispatchEvent(new CustomEvent('favorites:reload'));
+  }
+
+  const syncSection = document.getElementById('sync-section') as HTMLDetailsElement;
+  const syncSummaryStatus = document.getElementById('sync-summary-status')!;
+  const syncSetup = document.getElementById('sync-setup')!;
+  const syncActiveEl = document.getElementById('sync-active')!;
+  const syncStatusLine = document.getElementById('sync-status-line')!;
+  const createBtn = document.getElementById('sync-create') as HTMLButtonElement;
+  const enterToggle = document.getElementById('sync-enter-toggle') as HTMLButtonElement;
+  const enterForm = document.getElementById('sync-enter-form') as HTMLFormElement;
+  const codeInput = document.getElementById('sync-code-input') as HTMLInputElement;
+  const rememberInput = document.getElementById('sync-remember') as HTMLInputElement;
+  const activateBtn = document.getElementById('sync-activate-btn') as HTMLButtonElement;
+  const enterError = document.getElementById('sync-enter-error')!;
+  const syncNowBtn = document.getElementById('sync-now') as HTMLButtonElement;
+  const forgetBtn = document.getElementById('sync-forget') as HTMLButtonElement;
+  const deleteRemoteBtn = document.getElementById('sync-delete-remote') as HTMLButtonElement;
+  const turnstileHolder = document.getElementById('sync-turnstile')!;
+  const codeDialog = document.getElementById('sync-code-dialog') as HTMLDialogElement;
+  const codeValue = document.getElementById('sync-code-value')!;
+  const codeCopyBtn = document.getElementById('sync-code-copy') as HTMLButtonElement;
+  const codeQrBtn = document.getElementById('sync-code-qr') as HTMLButtonElement;
+  const syncQrHolder = document.getElementById('sync-qr-holder')!;
+  const syncQrHint = document.getElementById('sync-qr-hint')!;
+  const codeRemember = document.getElementById('sync-code-remember') as HTMLInputElement;
+
+  const SYNC_OUTCOME_KEYS: Record<string, MessageKey> = {
+    'not-found': 'sync.notFound',
+    corrupt: 'sync.corrupt',
+    network: 'sync.networkError',
+    'too-big': 'sync.tooBig',
+    exists: 'sync.exists',
+    invalid: 'sync.invalidCode',
+    forbidden: 'sync.turnstileFailed',
+    error: 'sync.networkError',
+  };
+
+  function syncTime(iso: string): string {
+    return new Intl.DateTimeFormat(locale === 'en' ? 'en-GB' : 'es-ES', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(iso));
+  }
+
+  function renderSync(): void {
+    // Resumen del summary (visible con la sección colapsada): si hay vault activo
+    const active = activeCode();
+    syncSummaryStatus.hidden = !active;
+    syncSummaryStatus.textContent = active ? t(locale, 'sync.statusActive') : '';
+    if (active) {
+      syncSetup.classList.add('hidden');
+      syncActiveEl.classList.remove('hidden');
+      const s = readVaultStatus();
+      if (!s) {
+        syncStatusLine.textContent = t(locale, 'sync.statusActive');
+        return;
+      }
+      let line = t(locale, 'sync.statusActive');
+      line += s.lastSyncAt ? ` ${t(locale, 'sync.lastSync', { time: syncTime(s.lastSyncAt) })}` : ` ${t(locale, 'sync.lastSyncNever')}`;
+      if (s.state === 'syncing') line += ` · ${t(locale, 'sync.syncing')}`;
+      else if (s.state === 'error') line += ` · ${t(locale, 'sync.errorPrefix')} ${t(locale, `sync.err.${s.error ?? 'error'}` as MessageKey)}`;
+      syncStatusLine.textContent = line;
+    } else {
+      syncSetup.classList.remove('hidden');
+      syncActiveEl.classList.add('hidden');
+    }
+  }
+
+  window.addEventListener('vault:status', () => renderSync());
+
+  function showEnterError(message: string): void {
+    enterError.textContent = message;
+    enterError.classList.remove('hidden');
+  }
+
+  enterToggle.addEventListener('click', () => {
+    enterForm.classList.toggle('hidden');
+    if (!enterForm.classList.contains('hidden')) codeInput.focus();
+  });
+
+  enterForm.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const code = normalizeSecret(codeInput.value);
+    if (!code) {
+      showEnterError(t(locale, 'sync.invalidCode'));
+      return;
+    }
+    activateBtn.disabled = true;
+    activateBtn.textContent = t(locale, 'sync.activating');
+    enterError.classList.add('hidden');
+    const outcome = await activateVault(code, rememberInput.checked);
+    activateBtn.disabled = false;
+    activateBtn.textContent = t(locale, 'sync.activate');
+    if (outcome === 'ok') {
+      codeInput.value = '';
+      enterForm.classList.add('hidden');
+      renderSync();
+      showBackupFeedback(t(locale, 'sync.activatedOk'));
+      reloadFavorites();
+    } else {
+      showEnterError(t(locale, SYNC_OUTCOME_KEYS[outcome] ?? 'sync.networkError'));
+    }
+  });
+
+  // Creación: reto Turnstile invisible → token → POST. Los tokens son single-use:
+  // reset del widget tras cada intento fallido.
+  let turnstileWidgetId: string | undefined;
+  let activeSecret = '';
+
+  function resetCreateButton(): void {
+    createBtn.disabled = false;
+    createBtn.textContent = t(locale, 'sync.create');
+  }
+
+  async function onCreateToken(token: string): Promise<void> {
+    const ts = window.turnstile;
+    const res = await createVaultWithTurnstile(token);
+    if (!res.ok) {
+      if (ts) {
+        try {
+          ts.reset(turnstileWidgetId);
+        } catch {
+          /* widget ya muerto */
+        }
+      }
+      resetCreateButton();
+      showBackupFeedback(res.message ? `${t(locale, SYNC_OUTCOME_KEYS[res.outcome] ?? 'sync.networkError')} (${res.message})` : t(locale, SYNC_OUTCOME_KEYS[res.outcome] ?? 'sync.networkError'), 'error');
+      return;
+    }
+    if (ts) {
+      try {
+        ts.remove(turnstileWidgetId);
+      } catch {
+        /* noop */
+      }
+    }
+    turnstileWidgetId = undefined;
+    resetCreateButton();
+    showCodeOnce(res.secret);
+    renderSync();
+  }
+
+  createBtn.addEventListener('click', async () => {
+    createBtn.disabled = true;
+    createBtn.textContent = t(locale, 'sync.creating');
+    let ts: TurnstileApi;
+    try {
+      ts = await loadTurnstile();
+    } catch {
+      resetCreateButton();
+      showBackupFeedback(t(locale, 'sync.turnstileLoadError'), 'error');
+      return;
+    }
+    if (turnstileWidgetId === undefined) {
+      turnstileWidgetId = ts.render(turnstileHolder, {
+        sitekey: TURNSTILE_SITEKEY,
+        execution: 'render',
+        callback: (token: string) => {
+          void onCreateToken(token).catch(() => resetCreateButton());
+        },
+        'error-callback': () => {
+          showBackupFeedback(t(locale, 'sync.turnstileFailed'), 'error');
+          try {
+            ts.reset(turnstileWidgetId);
+          } catch {
+            /* noop */
+          }
+          resetCreateButton();
+        },
+        'expired-callback': () => {
+          try {
+            ts.reset(turnstileWidgetId);
+          } catch {
+            /* noop */
+          }
+        },
+      });
+    }
+    ts.execute(turnstileWidgetId);
+  });
+
+  // El código se muestra UNA vez: copiar, QR #sync= y decisión de "recordar"
+  function showCodeOnce(secret: string): void {
+    activeSecret = secret;
+    codeValue.textContent = formatSecret(secret);
+    syncQrHolder.innerHTML = '';
+    syncQrHolder.classList.add('hidden');
+    syncQrHint.classList.add('hidden');
+    codeRemember.checked = true;
+    showBackupFeedback(t(locale, 'sync.createdOk'));
+    codeDialog.showModal();
+  }
+
+  codeCopyBtn.addEventListener('click', async () => {
+    if (!activeSecret) return;
+    try {
+      await navigator.clipboard.writeText(formatSecret(activeSecret));
+      showBackupFeedback(t(locale, 'sync.codeCopied'));
+    } catch {
+      /* sin permiso de portapapeles: el código sigue visible en el diálogo */
+    }
+  });
+
+  codeQrBtn.addEventListener('click', () => {
+    if (syncQrHolder.classList.contains('hidden')) {
+      syncQrHolder.innerHTML = qrSvg(`${location.origin}${href('/favoritos', locale)}#sync=${formatSecret(activeSecret)}`);
+      syncQrHolder.classList.remove('hidden');
+      syncQrHint.classList.remove('hidden');
+    } else {
+      syncQrHolder.classList.add('hidden');
+      syncQrHint.classList.add('hidden');
+    }
+  });
+
+  codeRemember.addEventListener('change', () => {
+    if (activeSecret) storeCode(activeSecret, codeRemember.checked);
+  });
+
+  syncNowBtn.addEventListener('click', () => syncNow());
+
+  forgetBtn.addEventListener('click', () => {
+    if (!window.confirm(t(locale, 'sync.forgetConfirm'))) return;
+    deactivateVault();
+    renderSync();
+  });
+
+  deleteRemoteBtn.addEventListener('click', async () => {
+    if (!window.confirm(t(locale, 'sync.deleteConfirm'))) return;
+    deleteRemoteBtn.disabled = true;
+    const res = await deleteRemoteVault();
+    deleteRemoteBtn.disabled = false;
+    if (res.ok) {
+      renderSync();
+    } else {
+      showBackupFeedback(t(locale, 'sync.deleteError'), 'error');
+    }
+  });
+
+  // Enlace de sincronización (#sync=, p. ej. desde el QR del otro dispositivo): al cargar,
+  // activar el código y limpiar el hash. Recordar por defecto: abrir el QR es activarlo aquí.
+  function consumeSyncHash(): void {
+    const m = /^#sync=([A-Za-z0-9\-]+)/i.exec(location.hash);
+    if (!m) return;
+    history.replaceState(null, '', location.pathname + location.search);
+    // Llegada por QR/enlace desde otro dispositivo: la activación no puede ser
+    // silenciosa dentro de una sección colapsada
+    syncSection.open = true;
+    const code = normalizeSecret(decodeURIComponent(m[1]));
+    if (!code) {
+      showBackupFeedback(t(locale, 'sync.hashInvalid'), 'error');
+      return;
+    }
+    void (async () => {
+      const outcome = await activateVault(code, true);
+      if (outcome === 'ok') {
+        renderSync();
+        showBackupFeedback(t(locale, 'sync.activatedOk'));
+        reloadFavorites();
+      } else {
+        showBackupFeedback(t(locale, SYNC_OUTCOME_KEYS[outcome] ?? 'sync.networkError'), 'error');
+      }
+    })();
+  }
+
+  try {
+    renderSync();
+  } catch (e) {
+    console.error(e);
+  }
+  try {
+    consumeSyncHash();
+  } catch (e) {
+    console.error(e);
+  }
+</script>

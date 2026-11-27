@@ -1,0 +1,37 @@
+# build output
+dist/
+
+# generated types
+.astro/
+
+# dependencies
+node_modules/
+
+# logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.log
+
+# environment variables
+.env
+.env.production
+
+# macOS-specific files
+.DS_Store
+
+# jetbrains setting folder
+.idea/
+
+# claude code (config local: launch.json del preview)
+.claude/
+
+# wrangler
+.wrangler/
+claude-design-input.zip
+
+# Docs internas del proyecto: viven solo en local (preparación del repo público)
+/*.md
+!README.md
+!README.es.md

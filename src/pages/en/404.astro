@@ -1,0 +1,12 @@
+---
+import NotFound from '../../components/NotFound.astro';
+
+export const prerender = true;
+
+// En el build el middleware ve /en/404 y fijaría locals.locale='en', pero no dependemos
+// de eso: el wrapper lo declara él mismo (la página es prerenderizada, el locale nace
+// de la RUTA, igual que en SSR)
+Astro.locals.locale = 'en';
+---
+
+<NotFound />

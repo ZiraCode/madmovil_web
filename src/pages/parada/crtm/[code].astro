@@ -1,0 +1,517 @@
+---
+import Layout from '../../../layouts/Layout.astro';
+import CrtmArrivalsBoard from '../../../components/CrtmArrivalsBoard.astro';
+import CrtmDaySchedule from '../../../components/CrtmDaySchedule.astro';
+import ErrorState from '../../../components/ErrorState.astro';
+import FavoriteButton from '../../../components/FavoriteButton.astro';
+import FavoriteCrtmLines from '../../../components/FavoriteCrtmLines.astro';
+import StopTransfers from '../../../components/StopTransfers.astro';
+import { getConnections, getCrtmDaySchedule, getCrtmLines, mapApiError, searchCrtmStopById } from '../../../lib/api';
+import { chipFallbackColors, crtmLineItemStyle, displayStopName, isCercaniasStop, networkLabel, trimMunicipality } from '../../../lib/crtm';
+import { href, t, translator } from '../../../lib/i18n';
+import { busStopJsonLd, jsonLdHtml, pageUrl } from '../../../lib/seo';
+import type { CrtmDaySchedule as CrtmDayScheduleData, CrtmLineColors, CrtmNetwork, CrtmStop } from '../../../types/crtm';
+import type { ConnectionsData } from '../../../types/connections';
+
+export const prerender = false;
+
+const locale = Astro.locals.locale ?? 'es';
+const tr = translator(locale);
+const code = Astro.params.code ?? '';
+
+// TODAS las paradas CRTM van al tablón de llegadas en tiempo real (estaciones r_* con el
+// GTFS-RT de Renfe; bus/ML/metro con el SAE del widget oficial del CRTM, degradado a
+// tablón teórico si la fuente cae). El endpoint sirve ventanas de 10-180 min
+const WINDOW_OPTIONS = [30, 60, 120, 180];
+const windowParam = Number(Astro.url.searchParams.get('window'));
+const windowMin = WINDOW_OPTIONS.includes(windowParam) ? windowParam : 60;
+
+let stop: CrtmStop | null = null;
+let notFound = false;
+let artifactsDown = false;
+
+// Los códigos CRTM llevan guion bajo (metro ligero: 10_1, 10_5…): [A-Za-z0-9_]
+if (!/^[A-Za-z0-9_]+$/.test(code)) {
+  notFound = true;
+  Astro.response.status = 404;
+} else {
+  try {
+    const result = await searchCrtmStopById(code);
+    if (result.stops.length > 0) {
+      stop = result.stops[0];
+    } else {
+      notFound = true;
+      Astro.response.status = 404;
+    }
+  } catch (e) {
+    const failure = mapApiError(e);
+    if (failure.notFound) notFound = true;
+    if (failure.down) artifactsDown = true;
+    Astro.response.status = failure.status;
+  }
+}
+
+// Transbordos (/connections): fail-soft total — 503/429/error solo ocultan la sección
+const transfersPromise: Promise<ConnectionsData | null> = stop ? getConnections('crtm', code).catch(() => null) : Promise.resolve(null);
+
+// Horarios de hoy (paquete C del plan SEO): bloque SSR estático bajo el tablón RT para
+// crawlers y usuarios sin JS. Mismo patrón fail-soft: error → bloque oculto. "Hoy" en
+// hora de Madrid, que es como valida el horizonte el API (el HTML se cachea 300 s en
+// edge: tras medianoche el día puede quedar pillado unos minutos, aceptable). El
+// endpoint cachea 300/3600 en el CDN, así que el render extra no revienta el rate limit
+const madridToday = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Madrid', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+const todaySchedulePromise: Promise<CrtmDayScheduleData | null> = stop
+  ? getCrtmDaySchedule(code, madridToday).catch(() => null)
+  : Promise.resolve(null);
+
+// Líneas de la parada (label → routeId): solo depende de stop, así que se lanza aquí en
+// paralelo en vez de encadenarse tras el tablón — un round-trip menos del TTFB. Su
+// rechazo se trata donde se consume (mismo try/catch que antes); este catch solo marca
+// la promesa como gestionada si rechaza antes de que el await la recoja (evita el
+// aviso de unhandled rejection en los logs del Worker)
+const linesPromise = stop ? getCrtmLines() : null;
+linesPromise?.catch(() => {});
+
+// W3 (auditoría CPU 2026-11-24): el tablón RT ya NO se fetchea en SSR — la respuesta es
+// no-store (cero caché: una invocación del server por render y un fetch al SAE del widget
+// o al GTFS-RT de Renfe por cada crawler) y el board ya refrescaba client-side; su fetch
+// inicial también lo es ahora (CrtmArrivalsBoard loading)
+
+// HTML cacheable en edge (favoritos, tablón RT y recálculo de "en N min" son client-side
+// desde W3); s-maxage 3600 (W2, auditoría CPU 2026-11-27): search/schedule/lines ya viajan
+// a 3600 en el CDN del API (el bloque "Horarios de hoy" acepta ~1 h de desfase, tráfico
+// nocturno ínfimo). Solo en 200
+if (stop) {
+  Astro.response.headers.set('Cache-Control', 'public, max-age=60, s-maxage=3600');
+}
+
+// Decisión 4: label → routeId vía /crtm/lines. Interurbanos únicos por label;
+// urbanos desambiguados por municipio (tras trim). Sin match único → chip plano sin enlace.
+interface LineLink extends CrtmLineColors {
+  label: string;
+  routeId: string | null;
+  network: CrtmNetwork | null;
+  noSchedule?: boolean;
+}
+
+let lineLinks: LineLink[] = [];
+
+if (stop && linesPromise) {
+  const municipality = trimMunicipality(stop.municipality);
+  // Estación de metro (código 4_x): el municipio puede llegar a null y el label ('1', '10'…)
+  // colisiona con urbanos de otros municipios, pero el candidato de red metro es el bueno
+  const stopIsMetro = stop.code.startsWith('4_');
+  try {
+    const { lines } = await linesPromise;
+    lineLinks = stop.lines.map((label) => {
+      const candidates = lines.filter((l) => l.label === label);
+      let chosen = candidates.length === 1 ? candidates[0] : null;
+      if (!chosen) {
+        const byMunicipality = candidates.filter((l) => trimMunicipality(l.municipality) === municipality);
+        if (byMunicipality.length === 1) chosen = byMunicipality[0];
+      }
+      if (!chosen && stopIsMetro) {
+        const metroCandidates = candidates.filter((l) => l.network === 'metro');
+        if (metroCandidates.length === 1) chosen = metroCandidates[0];
+      }
+      return chosen
+        ? { label, routeId: chosen.routeId, network: chosen.network, color: chosen.color, textColor: chosen.textColor, noSchedule: chosen.noSchedule }
+        : { label, routeId: null, network: null };
+    });
+  } catch {
+    lineLinks = stop.lines.map((label) => ({ label, routeId: null, network: null }));
+  }
+}
+
+const municipality = stop ? trimMunicipality(stop.municipality) : '';
+// El API manda el nombre en mayúsculas; se pinta normalizado (ver displayStopName)
+const stopName = stop ? displayStopName(stop.name) : '';
+// Estación de Cercanías Renfe (r_*): la zona tarifaria llega a null (el feed Renfe no
+// trae zone_id) y el kicker/SEO la presentan como estación, no como parada CRTM
+const isCercaniasStation = stop ? isCercaniasStop(stop.code) : false;
+
+// SEO: título por tipo (queries "estación Sol horarios" / "parada 07301 horarios")
+const isMetroStation = stop ? stop.code.startsWith('4_') : false;
+const isMlStation = stop ? stop.code.startsWith('10_') : false;
+const seoTitle = stop
+  ? isCercaniasStation
+    ? t(locale, 'stopCrtm.seoTitleCercanias', { name: stopName })
+    : isMetroStation || isMlStation
+      ? t(locale, 'stopCrtm.seoTitleStation', {
+          name: stopName,
+          network: networkLabel(locale, isMetroStation ? 'metro' : 'ml'),
+        })
+      : t(locale, 'stopCrtm.seoTitleBus', { code, name: stopName })
+  : t(locale, 'error.stopNotFoundTitle');
+const stopJsonLd = stop
+  ? jsonLdHtml(
+      busStopJsonLd({
+        name: stopName,
+        url: pageUrl(`/parada/crtm/${encodeURIComponent(code)}`, locale),
+        lat: stop.lat,
+        lon: stop.lon,
+        municipality: municipality || null,
+      })
+    )
+  : null;
+
+// Horario teórico por fecha (modo date de /crtm/stops/schedule): TODAS las redes CRTM
+// (2026-10-10). Solo se OCULTA cuando la parada entera es de red sin horarios oficiales
+// comprobable por los chips (metro en catálogo: TODAS sus líneas traen noSchedule: true)
+// — si el CRTM republique el feed, el flag desaparece y el toggle vuelve solo. Paradas
+// sin líneas resueltas (getCrtmLines caído) lo muestran fail-open: el aviso runtime del
+// noScheduleData del propio endpoint cubre el catálogo. Paradas EMT: otra página, nada
+const resolvedLineLinks = lineLinks.filter((l): l is LineLink & { network: CrtmNetwork } => l.network !== null);
+const dayScheduleLines =
+  resolvedLineLinks.length > 0 && resolvedLineLinks.every((l) => Boolean(l.noSchedule))
+    ? null
+    : lineLinks.map((l) => ({ label: l.label, network: l.network, color: l.color, textColor: l.textColor, noSchedule: l.noSchedule }));
+// Redes de las líneas de la parada para el board RT: los items del widget pueden llegar
+// SIN network en vivo y con esto el chip sale con su color de línea ya en el SSR
+const boardLineNetworks = Object.fromEntries(resolvedLineLinks.map((l) => [l.label, l.network]));
+
+// Horarios de hoy: oculto si la parada es de red en catálogo (dayScheduleLines null), si
+// el endpoint trae noScheduleData (catálogo en caliente) o si el fetch falló (fail-soft)
+const todaySchedule = dayScheduleLines ? ((await todaySchedulePromise) ?? null) : null;
+const todayDepartures = todaySchedule && !todaySchedule.noScheduleData ? todaySchedule.departures : [];
+
+interface TodayDirInfo {
+  headsign: string;
+  dir: number;
+  first: string;
+  last: string;
+}
+interface TodayLineInfo extends CrtmLineColors {
+  label: string;
+  network: CrtmNetwork | null;
+  firstISO: string;
+  dirs: TodayDirInfo[];
+}
+interface TodayStripItem {
+  label: string;
+  network: CrtmNetwork | null;
+  time: string;
+  past: boolean;
+}
+
+// Mismo agrupado y dedupe de salidas EXACTAS que CrtmDaySchedule (el API duplica trips
+// que pasan dos veces por la parada): línea → sentido (headsign) con primera/última del
+// día y una lista plana deduplicada y cronológica para la tira de próximas salidas
+const lineLinkByLabel = new Map(lineLinks.map((l) => [l.label, l] as const));
+const todayGroups: TodayLineInfo[] = [];
+const todayFlat: { label: string; network: CrtmNetwork | null; time: string; iso: string }[] = [];
+{
+  const groups = new Map<string, TodayLineInfo & { dirKeys: Map<string, TodayDirInfo> }>();
+  const seen = new Set<string>();
+  for (const d of todayDepartures) {
+    const link = lineLinkByLabel.get(d.line);
+    let group = groups.get(d.line);
+    if (!group) {
+      group = {
+        label: d.line,
+        network: link?.network ?? d.network ?? null,
+        color: link?.color,
+        textColor: link?.textColor,
+        firstISO: d.departureISO,
+        dirs: [],
+        dirKeys: new Map(),
+      };
+      groups.set(d.line, group);
+    }
+    const dedupeKey = `${d.line}|${d.dir}|${d.headsign}|${d.time}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    const dirKey = `${d.dir}|${d.headsign}`;
+    let bucket = group.dirKeys.get(dirKey);
+    if (!bucket) {
+      bucket = { headsign: d.headsign, dir: d.dir, first: d.time, last: d.time };
+      group.dirKeys.set(dirKey, bucket);
+      group.dirs.push(bucket);
+    } else {
+      bucket.last = d.time;
+    }
+    todayFlat.push({ label: d.line, network: group.network, time: d.time, iso: d.departureISO });
+  }
+  todayGroups.push(...[...groups.values()].sort((a, b) => a.firstISO.localeCompare(b.firstISO)));
+}
+
+// Tira de próximas salidas: ventana de ~10 anclada a ahora. Las ya pasadas NO se cortan
+// (contenido para el crawler): quedan atenuadas igual que en CrtmDaySchedule, y a última
+// hora del día la ventana rellena por detrás con las últimas pasadas para no quedarse
+// vacía
+const UPCOMING_SHOWN = 10;
+const nowMs = Date.now();
+const firstFutureIdx = todayFlat.findIndex((d) => Date.parse(d.iso) >= nowMs);
+let stripStart: number;
+let stripEnd: number;
+if (firstFutureIdx === -1) {
+  stripStart = Math.max(0, todayFlat.length - UPCOMING_SHOWN);
+  stripEnd = todayFlat.length;
+} else {
+  const futureCount = todayFlat.length - firstFutureIdx;
+  const backfill = Math.max(0, UPCOMING_SHOWN - Math.min(futureCount, UPCOMING_SHOWN));
+  stripStart = Math.max(0, firstFutureIdx - backfill);
+  stripEnd = firstFutureIdx + UPCOMING_SHOWN;
+}
+const todayStrip: TodayStripItem[] = todayFlat.slice(stripStart, stripEnd).map((d) => ({ label: d.label, network: d.network, time: d.time, past: Date.parse(d.iso) < nowMs }));
+const todayStripHasPast = todayStrip.some((d) => d.past);
+// Techo del API: 1000 salidas por consulta. Un intercambiador trunca POR LA COLA (07301
+// → hasta las 16:59), así que la "Primera" de cada línea siempre es correcta pero la
+// "Última" quedaría cortada: se omite y la nota avisa (misma convención que
+// CrtmDaySchedule; el desahogo por línea vive en el toggle de abajo)
+const todayTruncated = (todaySchedule?.count ?? 0) >= 1000;
+
+// Salidas consecutivas de la misma línea bajo un mismo chip (la tira va ordenada por
+// hora y las líneas se intercalan)
+interface TodayRun extends CrtmLineColors {
+  label: string;
+  network: CrtmNetwork | null;
+  times: { time: string; past: boolean }[];
+}
+const todayRuns: TodayRun[] = [];
+for (const d of todayStrip) {
+  const lastRun = todayRuns[todayRuns.length - 1];
+  if (lastRun && lastRun.label === d.label) {
+    lastRun.times.push({ time: d.time, past: d.past });
+  } else {
+    const link = lineLinkByLabel.get(d.label);
+    todayRuns.push({ label: d.label, network: d.network, color: link?.color, textColor: link?.textColor, times: [{ time: d.time, past: d.past }] });
+  }
+}
+const showTodaySchedule = todayGroups.length > 0;
+
+// Chip de línea: color del contexto (lineLinks) → oficial ML/C* del label → uniforme de
+// bus por red; sin nada de eso, tono de red (.crtm-badge) y solo sin network cae a tinta
+function todayChip(label: string, network: CrtmNetwork | null, colors: CrtmLineColors): { style: string | undefined; neutral: boolean } {
+  const style = crtmLineItemStyle({ label, color: colors.color, textColor: colors.textColor });
+  if (style) return { style, neutral: false };
+  const fallback = chipFallbackColors(label, network);
+  if (fallback) return { style: `background:${fallback.color};color:${fallback.textColor}`, neutral: false };
+  return { style: undefined, neutral: network === null };
+}
+
+// count 0 (parada aislada) = sección oculta, no error
+const transfers = (await transfersPromise) ?? null;
+---
+
+<Layout
+  title={seoTitle}
+  description={
+    stop
+      ? isCercaniasStation
+        ? municipality
+          ? t(locale, 'stopCrtm.seoDescriptionCercanias', { name: stopName, code, municipality })
+          : t(locale, 'stopCrtm.seoDescriptionCercaniasNoMuni', { name: stopName, code })
+        : municipality
+          ? t(locale, 'stopCrtm.seoDescription', { name: stopName, code, municipality, zone: stop.zone })
+          : t(locale, 'stopCrtm.seoDescriptionNoMuni', { name: stopName, code, zone: stop.zone })
+      : undefined
+  }
+>
+  {stopJsonLd && <script type="application/ld+json" set:html={stopJsonLd} />}
+  {
+    notFound ? (
+      <ErrorState
+        tone="neutral"
+        title={t(locale, 'error.stopNotFoundTitle')}
+        body={t(locale, 'error.crtmStopNotFoundBody', { code })}
+        action={{ path: '/', label: t(locale, 'error.searchOtherStop') }}
+      />
+    ) : artifactsDown ? (
+      <ErrorState
+        tone="warn"
+        title={t(locale, 'error.crtmDownTitle')}
+        body={t(locale, 'error.crtmDownBody', { code })}
+        retry
+        action={{ path: '/', label: t(locale, 'error.backHome') }}
+      />
+    ) : !stop ? (
+      <ErrorState
+        tone="danger"
+        title={t(locale, 'error.loadStopTitle')}
+        body={t(locale, 'error.tryAgainSoon')}
+        action={{ path: '/', label: t(locale, 'error.backHome') }}
+      />
+    ) : (
+      <>
+        {/* Misma rejilla que /parada y que el cuerpo de la página: el raíl derecho cae sobre la
+            columna de líneas. Zona y municipio son pastillas en móvil y filas del raíl en
+            escritorio — el payload CRTM no trae horarios, así que no hay franjas que mostrar. */}
+        <section class="rounded-2xl bg-brand-soft px-4 py-4 sm:px-5 sm:py-5">
+          <div class="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3 lg:grid-cols-[minmax(0,1fr)_20.75rem] lg:gap-x-8 xl:grid-cols-[minmax(0,1fr)_24.75rem]">
+            <div class="min-w-0">
+              <p class="text-[11px] font-bold uppercase tracking-[0.14em] text-brand-ink">
+                {isCercaniasStation ? t(locale, 'stopCrtm.kickerCercanias', { code: stop.code }) : t(locale, 'stopCrtm.kicker', { code: stop.code })}
+              </p>
+              <h1 class="mt-1 text-2xl font-bold leading-[1.15] tracking-tight text-pretty">{stopName}</h1>
+              {stop.address && <p class="mt-1 text-[13px] text-ink-2">{stop.address}</p>}
+              <div class="mt-2.5 flex flex-wrap gap-1.5 lg:hidden">
+                {stop.zone && (
+                  <span class="rounded-full border border-line bg-surface px-2 py-0.5 text-[11px] font-semibold text-ink-2">
+                    {t(locale, 'zone.label', { zone: stop.zone })}
+                  </span>
+                )}
+                {municipality && (
+                  <span class="rounded-full border border-line bg-surface px-2 py-0.5 text-[11px] font-semibold text-ink-2">
+                    {municipality}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <div class="lg:row-span-2">
+              <FavoriteButton stopId={`crtm:${stop.code}`} stopName={stopName} />
+
+              <dl class="hidden lg:mt-4 lg:grid lg:gap-2.5 lg:border-t lg:border-brand-ink/15 lg:pt-4">
+                <div class="flex items-baseline justify-between gap-3">
+                  <dt class="text-[11px] font-bold uppercase tracking-[0.1em] text-brand-ink">{tr('stop.linesLabel')}</dt>
+                  <dd class="text-[13.5px] font-semibold tabular-nums text-ink">{lineLinks.length}</dd>
+                </div>
+                {stop.zone && (
+                  <div class="flex items-baseline justify-between gap-3">
+                    <dt class="text-[11px] font-bold uppercase tracking-[0.1em] text-brand-ink">{tr('stopCrtm.zoneLabel')}</dt>
+                    <dd class="text-[13.5px] font-semibold text-ink">{stop.zone}</dd>
+                  </div>
+                )}
+                {municipality && (
+                  <div class="flex items-baseline justify-between gap-3">
+                    <dt class="text-[11px] font-bold uppercase tracking-[0.1em] text-brand-ink">{tr('stopCrtm.municipalityLabel')}</dt>
+                    <dd class="min-w-0 truncate text-[13.5px] font-semibold text-ink">{municipality}</dd>
+                  </div>
+                )}
+              </dl>
+            </div>
+
+            <div class="col-span-2 lg:col-span-1">
+              <FavoriteCrtmLines
+                stopId={`crtm:${stop.code}`}
+                lines={lineLinks.map((l) => ({ label: l.label, network: l.network, color: l.color, textColor: l.textColor }))}
+              />
+            </div>
+          </div>
+        </section>
+
+        {/* Mismo reparto que /parada: llegadas en la columna principal y líneas en la
+            lateral. La rejilla va siempre, aunque no haya líneas: sin ella las filas de
+            llegadas se estirarían hasta los 1280 px del shell */}
+        <div class="lg:grid lg:grid-cols-[minmax(0,1fr)_22rem] lg:items-start lg:gap-8 xl:grid-cols-[minmax(0,1fr)_26rem]">
+          <div>
+            <CrtmArrivalsBoard stopCode={stop.code} windowMin={windowMin} lineNetworks={boardLineNetworks} loading />
+            {showTodaySchedule && (
+              <section class="mt-8" aria-label={tr('todaySchedule.aria')}>
+                <h2 class="mb-2.5 text-[17px] font-bold tracking-tight">{tr('todaySchedule.heading')}</h2>
+                {todayTruncated && (
+                  <p class="mb-3 flex items-start gap-3 rounded-xl border border-warn bg-warn-soft px-4 py-2.5 text-[13px] font-medium text-warn-ink" role="note">
+                    <span class="mt-px grid size-5 shrink-0 place-items-center rounded-full bg-warn text-[11px] font-bold text-page" aria-hidden="true">!</span>
+                    <span class="min-w-0">{tr('daySchedule.truncated')}</span>
+                  </p>
+                )}
+                <div class="overflow-hidden rounded-xl border border-line bg-surface shadow-xs">
+                  <ul class="divide-y divide-line">
+                    {todayGroups.map((g) =>
+                      g.dirs.map((b) => {
+                        const chip = todayChip(g.label, g.network, g);
+                        return (
+                          <li class="flex flex-wrap items-center gap-x-2.5 gap-y-1 px-3 py-2">
+                            <span
+                              class:list={[
+                                'crtm-badge grid h-7 min-w-[34px] shrink-0 place-items-center rounded-md px-1.5 text-[13px] font-bold tabular-nums',
+                                chip.neutral && 'bg-ink text-surface',
+                              ]}
+                              data-network={g.network}
+                              style={chip.style}
+                            >
+                              {g.label}
+                            </span>
+                            <span class="min-w-0 flex-1 text-[13px] font-semibold text-ink-2">
+                              <span aria-hidden="true">→ </span>
+                              {displayStopName(b.headsign)}
+                            </span>
+                            <span class="ml-auto shrink-0 text-[12px] tabular-nums text-ink-3">
+                              {tr('todaySchedule.first')} <span class="font-semibold text-ink">{b.first}</span>
+                              {!todayTruncated && (
+                                <span>
+                                  <span aria-hidden="true"> · </span>
+                                  {tr('todaySchedule.last')} <span class="font-semibold text-ink">{b.last}</span>
+                                </span>
+                              )}
+                            </span>
+                          </li>
+                        );
+                      })
+                    )}
+                  </ul>
+                  <div class="border-t border-line px-3 py-2.5">
+                    <p class="mb-1.5 text-[11px] font-semibold uppercase tracking-[0.1em] text-ink-3">{tr('todaySchedule.upcoming')}</p>
+                    <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
+                      {todayRuns.map((run) => {
+                        const chip = todayChip(run.label, run.network, run);
+                        return (
+                          <span class="inline-flex items-center gap-1.5">
+                            <span
+                              class:list={[
+                                'crtm-badge grid h-7 min-w-[34px] shrink-0 place-items-center rounded-md px-1.5 text-[13px] font-bold tabular-nums',
+                                chip.neutral && 'bg-ink text-surface',
+                              ]}
+                              data-network={run.network}
+                              style={chip.style}
+                            >
+                              {run.label}
+                            </span>
+                            <span class="flex flex-wrap gap-1">
+                              {run.times.map((tm) =>
+                                tm.past ? (
+                                  <span class="px-1 py-0.5 text-[12px] font-medium tabular-nums text-ink-3">{tm.time}</span>
+                                ) : (
+                                  <span class="rounded-md bg-surface-2 px-1.5 py-0.5 text-[12px] font-semibold tabular-nums text-ink">{tm.time}</span>
+                                )
+                              )}
+                            </span>
+                          </span>
+                        );
+                      })}
+                    </div>
+                    {todayStripHasPast && <p class="mt-1.5 text-[11.5px] text-ink-3">{tr('daySchedule.pastNote')}</p>}
+                  </div>
+                </div>
+                <p class="mt-2 text-[11px] leading-relaxed text-ink-3">{tr('daySchedule.attribution')}</p>
+              </section>
+            )}
+            {dayScheduleLines && <CrtmDaySchedule stopCode={stop.code} lines={dayScheduleLines} />}
+            {transfers && transfers.transfers.count > 0 && <StopTransfers data={transfers} />}
+          </div>
+
+          {lineLinks.length > 0 && (
+            <aside class="lg:sticky lg:top-(--mm-sticky-aside)">
+              <section class="mt-8 lg:mt-7" aria-label={tr('stopCrtm.linesAria')}>
+                <h2 class="mb-2.5 text-[17px] font-bold tracking-tight">{tr('stopCrtm.linesHeading')}</h2>
+                <div class="flex flex-wrap gap-1.5 rounded-xl border border-line bg-surface p-3 shadow-xs">
+                  {lineLinks.map((l) =>
+                    l.routeId ? (
+                      <a
+                        href={href(`/linea/crtm/${l.routeId}`, locale)}
+                        class="crtm-badge grid h-7 min-w-[34px] place-items-center rounded-md px-1.5 text-[13px] font-bold tabular-nums transition focus-ring"
+                        data-network={l.network}
+                        style={crtmLineItemStyle(l)}
+                        title={t(locale, 'line.viewLine', { label: l.label })}
+                      >
+                        {l.label}
+                      </a>
+                    ) : (
+                      <span
+                        class="grid h-7 min-w-[34px] place-items-center rounded-md bg-ink px-1.5 text-[13px] font-bold tabular-nums text-surface"
+                        style={crtmLineItemStyle(l)}
+                      >
+                        {l.label}
+                      </span>
+                    )
+                  )}
+                </div>
+              </section>
+            </aside>
+          )}
+        </div>
+      </>
+    )
+  }
+</Layout>

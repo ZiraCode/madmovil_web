@@ -1,0 +1,55 @@
+---
+import Legal from '../layouts/Legal.astro';
+
+export const prerender = true;
+---
+
+<Legal title="Declaración de accesibilidad" updated="agosto de 2026">
+  <p>
+    Madrid Movilidad nace con la voluntad de que cualquier persona pueda consultar la información de transporte de la
+    Comunidad de Madrid con independencia de sus capacidades, del dispositivo o de sus condiciones de red. Esta
+    declaración explica nuestro nivel de accesibilidad y cómo avisarnos de cualquier barrera.
+  </p>
+
+  <h2>1. Compromiso y nivel de conformidad</h2>
+  <p>
+    Esta web se ha diseñado y desarrollado para cumplir con las pautas <strong>WCAG 2.1, nivel AA</strong> del W3C,
+    referente reconocido en la normativa europea de accesibilidad. La declaración se basa en una <strong>autoevaluación</strong> realizada
+    por el titular del sitio; no ha sido auditada por un tercero independiente.
+  </p>
+
+  <h2>2. Medidas adoptadas</h2>
+  <ul>
+    <li>Diseño adaptativo «móvil primero»: los contenidos se reorganizan sin recortarse en pantallas pequeñas.</li>
+    <li>Navegación completa por teclado, con indicador de foco visible y consistente.</li>
+    <li>Contrastes de color de texto suficientes, tanto en tema claro como oscuro.</li>
+    <li>Uso semántico de encabezados, listas, regiones y etiquetas de formulario; mensajes de estado anunciados a lectores de pantalla.</li>
+    <li>Iconos decorativos ocultos a tecnologías de asistencia; textos alternativos en imágenes informativas.</li>
+    <li>Respeto de la preferencia del sistema <code>prefers-reduced-motion</code> en las animaciones.</li>
+    <li>Funcionamiento sin JavaScript de las búsquedas principales (formularios con recarga de página).</li>
+  </ul>
+
+  <h2>3. Contenido no accesible y limitaciones conocidas</h2>
+  <ul>
+    <li>
+      <strong>Mapas interactivos</strong> (Leaflet con teselas de OpenStreetMap): los mapas tienen alternativas
+      textuales limitadas; la información equivalente (paradas cercanas, recorridos y listados de paradas por sentido)
+      está disponible siempre en formato texto o lista.
+    </li>
+    <li>
+      <strong>Documentos de terceros:</strong> los PDF de incidencias enlazados proceden de EMT Madrid y pueden no
+      cumplir los requisitos de accesibilidad; su contenido se resume en texto en la propia web.
+    </li>
+    <li>
+      <strong>Datos en tiempo real:</strong> los avisos sonoros y actualizaciones automáticas pueden no estar
+      disponibles con lectores de pantalla en todas las vistas.
+    </li>
+  </ul>
+
+  <h2>4. Comunicación de barreras</h2>
+  <p>
+    Si encuentras cualquier dificultad para acceder a un contenido o funcionalidad, escríbenos a <a href="mailto:info@madmovil.es">info@madmovil.es</a> indicando
+    la página y el problema detectado. Trataremos de dar una respuesta accesible y una solución razonable en el menor
+    plazo posible.
+  </p>
+</Legal>
